@@ -102,7 +102,14 @@ async def delete_school(school_id: str, _: bool = Depends(verify_admin_token)):
     # Delete school (cascade will remove all related data due to ON DELETE CASCADE)
     db.table("schools").delete().eq("id", school_id).execute()
     return {"message": f"School '{school_name}' and all its data permanently deleted."}
-
+@router.put("/schools/{school_id}/premium")
+async def toggle_premium(school_id: str, premium: bool = True, _: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    result = db.table("schools").update({"is_premium": premium}).eq("id", school_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="School not found")
+    status = "activated" if premium else "deactivated"
+    return {"message": f"Premium features {status} for school"}
 @router.get("/schools/{school_id}/details")
 async def get_school_details(school_id: str, _: bool = Depends(verify_admin_token)):
     db = get_supabase()
@@ -141,6 +148,25 @@ async def setup_default_admin():
     hashed = hash_password(default_password)
     db.table("admins").insert({"username": default_username, "password_hash": hashed}).execute()
     return {"message": f"Default admin created. Username: {default_username}, Password: {default_password} (change immediately!)"}
+
+class BrandingUpdate(BaseModel):
+    slug: Optional[str] = None
+    logo_url: Optional[str] = None
+
+@router.put("/schools/{school_id}/branding")
+async def update_school_branding(school_id: str, payload: BrandingUpdate, _: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    data = {}
+    if payload.slug is not None:
+        data["slug"] = payload.slug
+    if payload.logo_url is not None:
+        data["logo_url"] = payload.logo_url
+    if not data:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    result = db.table("schools").update(data).eq("id", school_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="School not found")
+    return {"message": "Branding updated", "school": result.data[0]}
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str

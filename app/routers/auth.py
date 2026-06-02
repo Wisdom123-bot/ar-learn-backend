@@ -18,6 +18,9 @@ class TeacherLoginResponse(BaseModel):
     school_id: str
     school_name: str
     role: str = "teacher"
+    is_premium: bool = False
+    slug: Optional[str] = None
+    logo_url: Optional[str] = None
 
 
 class SchoolSearchResult(BaseModel):
@@ -39,16 +42,19 @@ class UnifiedLoginResponse(BaseModel):
     school_id: str
     school_name: str
     role: str
+    is_premium: bool = False
+    slug: Optional[str] = None
+    logo_url: Optional[str] = None
 
 
-# ---------- Legacy Teacher Login (kept for existing pages) ----------
+# ---------- Legacy Teacher Login ----------
 @router.post("/teacher/login", response_model=TeacherLoginResponse)
 async def teacher_login(payload: TeacherLoginRequest):
     db = get_supabase()
 
     result = (
         db.table("teachers")
-        .select("*, schools(name, is_active)")
+        .select("*, schools(name, is_active, is_premium, slug, logo_url)")
         .eq("teacher_code", payload.teacher_code)
         .execute()
     )
@@ -57,8 +63,9 @@ async def teacher_login(payload: TeacherLoginRequest):
         raise HTTPException(status_code=401, detail="Invalid teacher code.")
 
     teacher = result.data[0]
+    school_data = teacher.get("schools")
 
-    if teacher.get("schools") and not teacher["schools"].get("is_active", True):
+    if school_data and not school_data.get("is_active", True):
         raise HTTPException(status_code=403, detail="School account is suspended.")
 
     return TeacherLoginResponse(
@@ -66,8 +73,11 @@ async def teacher_login(payload: TeacherLoginRequest):
         name=teacher["name"],
         teacher_code=teacher["teacher_code"],
         school_id=teacher["school_id"],
-        school_name=teacher["schools"]["name"] if teacher.get("schools") else "",
+        school_name=school_data["name"] if school_data else "",
         role=teacher.get("role", "teacher"),
+        is_premium=school_data.get("is_premium", False) if school_data else False,
+        slug=school_data.get("slug") if school_data else None,
+        logo_url=school_data.get("logo_url") if school_data else None,
     )
 
 
@@ -95,7 +105,13 @@ async def unified_login(payload: UnifiedLoginRequest):
     db = get_supabase()
 
     # 1. Validate school
-    school = db.table("schools").select("id, name, is_active").eq("id", payload.school_id).single().execute()
+    school = (
+        db.table("schools")
+        .select("id, name, is_active, is_premium, slug, logo_url")
+        .eq("id", payload.school_id)
+        .single()
+        .execute()
+    )
     if not school.data:
         raise HTTPException(status_code=404, detail="School not found")
     if not school.data["is_active"]:
@@ -127,4 +143,7 @@ async def unified_login(payload: UnifiedLoginRequest):
         school_id=teacher["school_id"],
         school_name=school.data["name"],
         role=teacher["role"],
+        is_premium=school.data.get("is_premium", False),
+        slug=school.data.get("slug"),
+        logo_url=school.data.get("logo_url"),
     )
