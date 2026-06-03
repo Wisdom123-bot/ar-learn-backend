@@ -44,14 +44,23 @@ def insert_teacher(db, school_id: str, name: str, role: str) -> dict:
 async def register_school(payload: SchoolRegistrationRequest):
     db = get_supabase()
 
-    # 1. Insert the school
+    # 1. Insert the school with duplicate check
     school_data = {
         "name": payload.school_name,
         "county": payload.county,
         "student_count": payload.number_of_students,
         "teacher_count": payload.number_of_teachers + (1 if payload.headteacher_name else 0) + (1 if payload.dean_name else 0),
     }
-    school_result = db.table("schools").insert(school_data).execute()
+    try:
+        school_result = db.table("schools").insert(school_data).execute()
+    except Exception as e:
+        if "unique_school_per_county" in str(e) or "duplicate key" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A school with this name already exists in this county."
+            )
+        raise HTTPException(status_code=500, detail="Failed to create school record.")
+    
     if not school_result.data:
         raise HTTPException(status_code=500, detail="Failed to create school record.")
     school = school_result.data[0]
@@ -99,6 +108,7 @@ async def register_school(payload: SchoolRegistrationRequest):
         teachers=[TeacherResponse(**t) for t in teacher_records],
         classes=[ClassResponse(**c) for c in class_records],
     )
+
 @router.get("/{school_id}/classes")
 async def get_school_classes(school_id: str):
     db = get_supabase()
@@ -108,5 +118,3 @@ async def get_school_classes(school_id: str):
 async def get_school_teachers(school_id: str):
     db = get_supabase()
     return db.table("teachers").select("id, name, teacher_code, role").eq("school_id", school_id).execute().data or []
-
-# Keep the existing get_school_classes and get_school_teachers endpoints if they are there
