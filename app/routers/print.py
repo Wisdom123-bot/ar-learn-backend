@@ -70,12 +70,13 @@ async def print_report(
             <p>Present: {present}/{total_att} days ({att_pct}%)</p>
         </div>"""
 
-    # Fee status (conditionally)
+    # Fee status (conditionally, safe query)
     fee_html = ""
     if show_fee_status:
-        fee = db.table("fee_balances").select("balance, cleared").eq("student_id", student_id).eq("term", term).single().execute()
-        balance = fee.data["balance"] if fee.data else 0
-        cleared = fee.data["cleared"] if fee.data else False
+        fee_result = db.table("fee_balances").select("balance, cleared").eq("student_id", student_id).eq("term", term).limit(1).execute()
+        fee_data = fee_result.data[0] if fee_result.data else {"balance": 0, "cleared": False}
+        balance = fee_data["balance"]
+        cleared = fee_data["cleared"]
         fee_html = f"""
         <div class="section">
             <h3>Fee Status</h3>
@@ -196,8 +197,9 @@ async def print_fee_statement(student_id: str, term: str = Query(...)):
     s = student.data
     class_name = s["classes"]["name"] if s.get("classes") else ""
 
-    balance = db.table("fee_balances").select("*").eq("student_id", student_id).eq("term", term).single().execute()
-    bal = balance.data if balance.data else None
+    # Safe fee balance query
+    balance_result = db.table("fee_balances").select("*").eq("student_id", student_id).eq("term", term).limit(1).execute()
+    bal = balance_result.data[0] if balance_result.data else None
 
     payments = db.table("fee_payments").select("*").eq("student_id", student_id).eq("term", term).order("payment_date", desc=True).execute().data or []
 
