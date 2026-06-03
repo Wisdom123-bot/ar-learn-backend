@@ -79,7 +79,7 @@ from app.schemas.school import SchoolRegistrationResponse  # reuse maybe
 @router.get("/schools")
 async def list_all_schools(_: bool = Depends(verify_admin_token)):
     db = get_supabase()
-    schools = db.table("schools").select("id, name, county, student_count, teacher_count, is_active, created_at").execute().data or []
+    schools = db.table("schools").select("id, name, county, student_count, teacher_count, is_active, is_premium, created_at").execute().data or []
     return schools
 
 @router.put("/schools/{school_id}/suspend")
