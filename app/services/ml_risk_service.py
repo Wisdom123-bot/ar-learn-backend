@@ -8,8 +8,9 @@ from app.utils.cache import get_cache, set_cache, redis_available
 import threading
 import time
 
-MODEL_FILENAME = "risk_model.pkl"
+MODEL_FILENAME = "risk_model_global.pkl"       # single global model
 STORAGE_BUCKET = "models"
+CACHE_KEY = "ml_risk_model_global"             # Redis cache key for the global model
 
 def _get_storage():
     """Return Supabase storage client."""
@@ -17,22 +18,19 @@ def _get_storage():
     return db.storage()
 
 def load_model():
-    """Load model from storage, or None if not available."""
+    """Load global model from storage, or None if not available."""
     try:
         storage = _get_storage()
-        # Check if file exists
-        # For now, we can try to download; if fails, return None.
         file_bytes = storage.from_(STORAGE_BUCKET).download(MODEL_FILENAME)
         return pickle.loads(file_bytes)
     except Exception:
         return None
 
 def save_model(model):
-    """Save model to storage."""
+    """Save global model to storage."""
     try:
         storage = _get_storage()
         model_bytes = pickle.dumps(model)
-        # Upload to bucket; create bucket if needed
         storage.from_(STORAGE_BUCKET).upload(MODEL_FILENAME, model_bytes, {"upsert": "true"})
     except Exception as e:
         print(f"ML: Failed to save model: {e}")
@@ -49,7 +47,7 @@ def prepare_features(student_id, subject_id, term, db):
     curr_result = db.table("results").select("score").eq("student_id", student_id).eq("subject_id", subject_id).eq("term", term).maybe_single().execute()
     current_score = curr_result.data["score"] if curr_result.data else 0
 
-    # Previous term – we need to calculate previous term name
+    # Previous term – calculate previous term name
     parts = term.split(" ")
     term_num = int(parts[1])
     year = int(parts[2])
@@ -106,36 +104,40 @@ def prepare_features(student_id, subject_id, term, db):
         overall_mean,
     ]
 
-def train_model_async(school_id: str):
-    """Train model in a background thread."""
+def train_model_async(school_id: str = None):
+    """
+    Train a global model on data from ALL schools.
+    The school_id parameter is kept for backward compatibility but is ignored;
+    training always uses every available school.
+    """
     def _train():
         db = get_supabase()
-        # Get all students of school
-        students = db.table("students").select("id, class_id").eq("school_id", school_id).execute().data
+        # Get ALL students from every school
+        students = db.table("students").select("id, class_id").execute().data
         if not students or len(students) < 50:
-            # Not enough data
+            print("ML: Not enough total students to train (need ≥50).")
             return
 
-        # We need historical data: for each student-subject pair, we need current term and next term result (to create label)
-        # This requires at least two terms of data. We'll use the most recent two terms in the database for this school.
-        terms = db.table("results").select("term").eq("student_id", students[0]["id"]).order("term").limit(2).execute().data  # not ideal
-        # Simpler: fetch all results for school, group by student+subject, try to find pairs where we have term T and term T+1.
-        # For demo, we'll assume we have at least two terms and use a simple approach: term1 and term2 (the two most common terms).
-        # We'll implement a robust term pairing later, but for now, we just skip if less than 2 distinct terms exist.
-        all_results = db.table("results").select("student_id, subject_id, term, score").in_("student_id", [s["id"] for s in students]).execute().data
+        # Fetch all results for those students
+        student_ids = [s["id"] for s in students]
+        all_results = db.table("results").select("student_id, subject_id, term, score").in_("student_id", student_ids).execute().data
+        if not all_results:
+            return
+
         unique_terms = list(set(r["term"] for r in all_results))
         if len(unique_terms) < 2:
             return
 
-        # Choose the two most recent terms (based on term ordering - we need a function to sort terms)
+        # Sort terms chronologically
         sorted_terms = sorted(unique_terms, key=lambda t: (int(t.split(" ")[2]), int(t.split(" ")[1])))
         current_term = sorted_terms[-1]
         previous_term = sorted_terms[-2]
 
-        X = []
-        y = []
         subjects = db.table("subjects").select("id").execute().data
         subject_ids = [s["id"] for s in subjects]
+
+        X = []
+        y = []
 
         for student in students:
             for subj in subject_ids:
@@ -152,18 +154,21 @@ def train_model_async(school_id: str):
                 y.append(label)
 
         if len(X) < 50:
-            return  # need minimum samples
+            print("ML: Not enough training samples (need ≥50).")
+            return
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         model = LogisticRegression(max_iter=1000)
         model.fit(X_train, y_train)
         accuracy = model.score(X_test, y_test)
-        print(f"ML: Model trained with accuracy {accuracy:.2f} on {len(X)} samples.")
+        print(f"ML: Global model trained with accuracy {accuracy:.2f} on {len(X)} samples from all schools.")
+
+        # Save globally
         save_model(model)
 
-        # Cache model in Redis for fast inference (if available)
+        # Cache in Redis (if available)
         if redis_available:
-            set_cache("ml_risk_model", pickle.dumps(model).hex(), ttl=86400*30)  # 30 days
+            set_cache(CACHE_KEY, pickle.dumps(model).hex(), ttl=86400*30)  # 30 days
 
     thread = threading.Thread(target=_train)
     thread.daemon = True
@@ -174,13 +179,13 @@ def predict_risk(student_id, subject_id, term):
     model = None
     # Try Redis first
     if redis_available:
-        cached = get_cache("ml_risk_model")
+        cached = get_cache(CACHE_KEY)
         if cached:
             model = pickle.loads(bytes.fromhex(cached))
     if model is None:
         model = load_model()
         if model and redis_available:
-            set_cache("ml_risk_model", pickle.dumps(model).hex(), ttl=86400*30)
+            set_cache(CACHE_KEY, pickle.dumps(model).hex(), ttl=86400*30)
 
     if model is None:
         return None
