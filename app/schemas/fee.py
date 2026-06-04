@@ -15,7 +15,7 @@ class FeePaymentCreate(BaseModel):
     amount: float = Field(..., gt=0, example=5000.0)
     term: str = Field(..., example="Term 1 2025")
     payment_date: date = Field(default_factory=date.today)
-    recorded_by: Optional[UUID] = None   # teacher/admin who recorded
+    recorded_by: Optional[UUID] = None
 
 
 class FeePaymentResponse(BaseModel):
@@ -35,3 +35,8 @@ class FeeStatus(BaseModel):
     cleared: bool
     payments: List[FeePaymentResponse] = []
     total_paid: float = 0.0
+
+
+class TermFeeRequest(BaseModel):
+    amount: float
+    class_id: Optional[UUID] = None   # if provided, apply only to this class

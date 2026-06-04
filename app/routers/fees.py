@@ -186,15 +186,39 @@ class TermFeeRequest(BaseModel):
     amount: float
 
 @router.post("/term-fee")
-async def set_term_fee(school_id: str = Query(...), term: str = Query(...), payload: TermFeeRequest = None):
+async def set_term_fee(
+    school_id: str = Query(...),
+    term: str = Query(...),
+    payload: TermFeeRequest = None,
+):
     db = get_supabase()
+
+    # 1. Store the term fee definition (for deficit calculation)
     existing = db.table("term_fees").select("id").eq("school_id", school_id).eq("term", term).execute()
     data = {"school_id": school_id, "term": term, "amount": payload.amount}
     if existing.data:
         db.table("term_fees").update(data).eq("id", existing.data[0]["id"]).execute()
     else:
         db.table("term_fees").insert(data).execute()
-    return {"message": "Term fee set", "amount": payload.amount}
+
+    # 2. Apply the fee to all relevant students
+    if payload.class_id:
+        students = db.table("students").select("id").eq("school_id", school_id).eq("class_id", str(payload.class_id)).execute().data
+    else:
+        students = db.table("students").select("id").eq("school_id", school_id).execute().data
+
+    if students:
+        for s in students:
+            # Upsert fee_balances for this student + term
+            student_id = s["id"]
+            bal = db.table("fee_balances").select("id").eq("student_id", student_id).eq("term", term).execute()
+            bal_data = {"student_id": student_id, "term": term, "balance": payload.amount, "cleared": False}
+            if bal.data:
+                db.table("fee_balances").update(bal_data).eq("id", bal.data[0]["id"]).execute()
+            else:
+                db.table("fee_balances").insert(bal_data).execute()
+
+    return {"message": f"Term fee set to KES {payload.amount:,.2f} for {len(students)} students", "amount": payload.amount}
 
 @router.get("/term-fee")
 async def get_term_fee(school_id: str = Query(...), term: str = Query(...)):
