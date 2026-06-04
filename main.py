@@ -21,6 +21,7 @@ from app.routers import exports
 from app.routers import ml_risk
 from app.routers import backup
 from app.routers import classes
+from app.routers import timetable_auto
 
 app = FastAPI(
     title="Ar-Learn API",
@@ -68,6 +69,7 @@ app.include_router(exports.router)
 app.include_router(ml_risk.router)
 app.include_router(backup.router)
 app.include_router(classes.router)
+app.include_router(timetable_auto.router)
 
 @app.get("/")
 async def root():
