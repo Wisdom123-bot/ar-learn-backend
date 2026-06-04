@@ -93,10 +93,10 @@ async def print_report(
             <p>{ai_remark}</p>
         </div>"""
 
-    # Teacher remarks (conditionally)
+        # Teacher remarks (conditionally)
     remarks_html = ""
     if show_teacher_remarks:
-       remark_entries = db.table("class_teacher_remarks").select("remark").eq("student_id", student_id).eq("class_id", s.get("class_id", "")).eq("term", term).execute().data or []
+        remark_entries = db.table("class_teacher_remarks").select("remark").eq("student_id", student_id).eq("class_id", s.get("class_id", "")).eq("term", term).execute().data or []
         if remark_entries:
             remarks_html = "<div class='section'><h3>Class Teacher Remarks</h3>"
             for rem in remark_entries:
