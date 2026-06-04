@@ -89,7 +89,7 @@ async def toggle_school_suspend(school_id: str, suspend: bool = True, _: bool = 
     result = db.table("schools").update({"is_active": not suspend}).eq("id", school_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="School not found")
-    status = "suspended" if not suspend else "reactivated"
+    status = "suspended" if suspend else "reactivated"
     return {"message": f"School {status} successfully"}
 
 @router.delete("/schools/{school_id}")
