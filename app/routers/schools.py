@@ -48,6 +48,8 @@ async def register_school(payload: SchoolRegistrationRequest):
     school_data = {
         "name": payload.school_name,
         "county": payload.county,
+        "email": payload.email,
+        "phone": payload.phone,
         "student_count": payload.number_of_students,
         "teacher_count": payload.number_of_teachers + (1 if payload.headteacher_name else 0) + (1 if payload.dean_name else 0),
     }
@@ -103,6 +105,8 @@ async def register_school(payload: SchoolRegistrationRequest):
         school_id=school["id"],
         school_name=school["name"],
         county=school["county"],
+        email=school.get("email", ""),
+        phone=school.get("phone", ""),
         headteacher=TeacherResponse(**headteacher_record) if headteacher_record else None,
         dean=TeacherResponse(**dean_record) if dean_record else None,
         teachers=[TeacherResponse(**t) for t in teacher_records],

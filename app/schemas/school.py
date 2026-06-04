@@ -10,6 +10,8 @@ class ClassCreate(BaseModel):
 class SchoolRegistrationRequest(BaseModel):
     school_name: str = Field(..., example="Moi Educational Centre")
     county: str = Field(..., example="Nairobi")
+    email: str = Field(..., example="info@moieducational.ac.ke")
+    phone: str = Field(..., example="0712345678")
     number_of_students: int = Field(..., example=500)
     number_of_teachers: int = Field(..., example=20)
     headteacher_name: Optional[str] = Field(None, example="Mr. Otieno")
@@ -39,6 +41,8 @@ class SchoolRegistrationResponse(BaseModel):
     school_id: UUID
     school_name: str
     county: str
+    email: str
+    phone: str
     headteacher: Optional[TeacherResponse] = None
     dean: Optional[TeacherResponse] = None
     teachers: List[TeacherResponse] = []
