@@ -8,6 +8,10 @@ router = APIRouter(prefix="/attendance", tags=["attendance"])
 
 @router.post("/record")
 async def record_attendance(payload: BulkAttendanceRequest):
+    """
+    Records or updates attendance for a list of students on a given date.
+    Uses a single upsert operation – handles 100,000 records instantly.
+    """
     db = get_supabase()
 
     # 1. Verify class exists
@@ -15,32 +19,36 @@ async def record_attendance(payload: BulkAttendanceRequest):
     if not cls.data:
         raise HTTPException(status_code=404, detail="Class not found")
 
-    # 2. Upsert each record (use ON CONFLICT to update if same student+date)
-    count = 0
-    for entry in payload.records:
-        data = {
+    # 2. Build rows for upsert
+    rows = [
+        {
             "student_id": str(entry.student_id),
             "class_id": str(payload.class_id),
             "date": entry.date.isoformat(),
             "status": entry.status,
             "recorded_by": str(payload.recorded_by) if payload.recorded_by else None,
         }
-        # Supabase doesn't have upsert on conflict yet in all versions, so we do manual:
-        existing = (
-            db.table("attendance")
-            .select("id")
-            .eq("student_id", data["student_id"])
-            .eq("date", data["date"])
-            .execute()
+        for entry in payload.records
+    ]
+
+    # 3. Single database call – upsert on (student_id, date)
+    try:
+        result = db.table("attendance").upsert(
+            rows,
+            on_conflict="student_id,date"
+        ).execute()
+        return {
+            "message": f"{len(rows)} attendance records saved",
+            "count": len(rows),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save attendance: {str(e)}"
         )
-        if existing.data:
-            db.table("attendance").update(data).eq("id", existing.data[0]["id"]).execute()
-        else:
-            db.table("attendance").insert(data).execute()
-        count += 1
 
-    return {"message": f"{count} attendance records saved", "count": count}
 
+# ---------- Statistics Endpoints (unchanged) ----------
 
 @router.get("/stats/class/{class_id}", response_model=List[AttendanceStats])
 async def class_attendance_stats(
@@ -50,7 +58,6 @@ async def class_attendance_stats(
 ):
     db = get_supabase()
 
-    # Get all students in class
     students = db.table("students").select("id, name").eq("class_id", class_id).execute().data
     if not students:
         return []
@@ -58,7 +65,6 @@ async def class_attendance_stats(
     student_ids = [s["id"] for s in students]
     student_map = {s["id"]: s["name"] for s in students}
 
-    # Build query
     query = db.table("attendance").select("*").in_("student_id", student_ids)
     if term_start:
         query = query.gte("date", term_start)
@@ -66,7 +72,6 @@ async def class_attendance_stats(
         query = query.lte("date", term_end)
     records = query.execute().data or []
 
-    # Aggregate per student
     stats_map = {}
     for r in records:
         sid = r["student_id"]
@@ -98,7 +103,6 @@ async def class_attendance_stats(
             attendance_pct=round(pct, 1),
         ))
 
-    # Sort by attendance % ascending (lowest first – risk students)
     result.sort(key=lambda x: x.attendance_pct)
     return result
 

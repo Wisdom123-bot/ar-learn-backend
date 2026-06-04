@@ -20,6 +20,7 @@ from app.routers import report_builder
 from app.routers import exports
 from app.routers import ml_risk
 from app.routers import backup
+from app.routers import classes
 
 app = FastAPI(
     title="Ar-Learn API",
@@ -66,6 +67,7 @@ app.include_router(report_builder.router)
 app.include_router(exports.router)
 app.include_router(ml_risk.router)
 app.include_router(backup.router)
+app.include_router(classes.router)
 
 @app.get("/")
 async def root():
