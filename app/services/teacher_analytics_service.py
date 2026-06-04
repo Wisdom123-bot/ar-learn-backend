@@ -28,14 +28,16 @@ def compute_teacher_value_add(
     if not teachers:
         return []
 
+    # Get all student IDs of this school (for subject‑level school mean)
+    school_students = db.table("students").select("id").eq("school_id", school_id).execute().data or []
+    school_student_ids = [s["id"] for s in school_students]
+
     teacher_results = []
 
     for teacher in teachers:
         tid = teacher["id"]
 
-        # Find all results submitted by this teacher (or linked to their assignments)
-        # We'll use results where submitted_by = teacher_id, and also where the teacher is assigned to the class/subject
-        # Simpler: use submitted_by directly (as we do in results submission)
+        # Find all results submitted by this teacher for this term
         current_res = (
             db.table("results")
             .select("score, subject_id, student_id")
@@ -52,7 +54,7 @@ def compute_teacher_value_add(
         current_scores = [r["score"] for r in current_res]
         current_mean = sum(current_scores) / len(current_scores)
 
-        # Subject-specific school mean for the same subjects this teacher taught
+        # Subject-specific school mean for the subjects this teacher taught
         subjects_taught = list(set(r["subject_id"] for r in current_res))
         school_subject_scores = []
         for subj_id in subjects_taught:
@@ -61,7 +63,7 @@ def compute_teacher_value_add(
                 .select("score")
                 .eq("subject_id", subj_id)
                 .eq("term", term)
-                .in_("student_id", db.table("students").select("id").eq("school_id", school_id).execute().data and [s["id"] for s in db.table("students").select("id").eq("school_id", school_id).execute().data] or [])
+                .in_("student_id", school_student_ids)
                 .execute()
                 .data or []
             )
@@ -89,7 +91,6 @@ def compute_teacher_value_add(
         value_add = current_mean - school_subject_mean if school_subject_mean is not None else None
 
         # Risk students: students with mean score < 50 in the teacher's subjects
-        # We'll compute per student mean for this teacher's results
         student_scores = defaultdict(list)
         for r in current_res:
             student_scores[r["student_id"]].append(r["score"])
