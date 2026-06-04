@@ -91,10 +91,6 @@ GUEST_SYSTEM_PROMPT = (
 async def get_teacher_from_token(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Optional[dict]:
-    """
-    If a valid token is provided, return the teacher record.
-    If no token or invalid, return None (guest user).
-    """
     if credentials is None:
         return None
     db = get_supabase()
@@ -102,6 +98,74 @@ async def get_teacher_from_token(
     if not teacher.data:
         return None
     return teacher.data
+
+
+# ----- Helper to format raw tool results into a clean, human‑readable answer -----
+def format_tool_result(tool_name: str, data: dict) -> str:
+    """Convert raw tool result dict into a friendly plain‑text answer."""
+    if tool_name == "get_top_students":
+        students = data.get("top_students", [])
+        if not students:
+            return "No student results found for that query."
+        lines = ["Here are the top students:"]
+        for i, s in enumerate(students, 1):
+            lines.append(f"{i}. {s['student_name']} ({s['class_name']}) – Mean: {s['mean_score']}%")
+        return "\n".join(lines)
+
+    if tool_name == "get_student_profile":
+        name = data.get("name", "Student")
+        adm = data.get("admission_number", "N/A")
+        cls = data.get("class", "N/A")
+        att = data.get("attendance_pct", 0)
+        fee_cleared = data.get("fee_cleared", False)
+        fee_balance = data.get("fee_balance", 0)
+        fee_status = "Cleared" if fee_cleared else f"KES {fee_balance:,.2f}"
+        return (
+            f"📚 {name} ({adm})\n"
+            f"Class: {cls}\n"
+            f"Attendance: {att}%\n"
+            f"Fee: {fee_status}"
+        )
+
+    if tool_name == "get_school_overview":
+        best_class = data.get("best_class", {}) or {}
+        worst_class = data.get("worst_class", {}) or {}
+        best_subj = data.get("best_subject", {}) or {}
+        worst_subj = data.get("worst_subject", {}) or {}
+        return (
+            f"🏫 School Mean: {data.get('school_mean', 0)}%\n"
+            f"📈 Best Class: {best_class.get('class_name', 'N/A')} ({best_class.get('mean_score', 0)}%)\n"
+            f"📉 Worst Class: {worst_class.get('class_name', 'N/A')} ({worst_class.get('mean_score', 0)}%)\n"
+            f"🌟 Best Subject: {best_subj.get('subject_name', 'N/A')} ({best_subj.get('mean_score', 0)}%)\n"
+            f"⚠️  Weakest Subject: {worst_subj.get('subject_name', 'N/A')} ({worst_subj.get('mean_score', 0)}%)"
+        )
+
+    if tool_name == "get_attendance_summary":
+        return f"📋 Attendance: {data.get('attendance_pct', 0)}% over {data.get('total_days', 0)} days."
+
+    if tool_name == "get_fee_summary":
+        return f"💰 Outstanding Fees: KES {data.get('total_outstanding', 0):,.2f}\n✅ Cleared: {data.get('cleared_count', 0)} students"
+
+    if tool_name == "get_class_ranking":
+        ranking = data.get("class_ranking", [])
+        if not ranking:
+            return "No class ranking data available."
+        lines = ["📊 Class Rankings:"]
+        for r in ranking:
+            lines.append(f"{r['rank']}. {r['class_name']} – {r['mean_score']}%")
+        return "\n".join(lines)
+
+    if tool_name == "get_teacher_performance":
+        teachers = data.get("teachers", [])
+        if not teachers:
+            return "No teacher performance data available."
+        lines = ["👩‍🏫 Teacher Performance:"]
+        for t in teachers:
+            lines.append(f"• {t['teacher_name']} – Mean: {t['current_mean']}%, Value‑Add: {t.get('value_add', 'N/A')}")
+        return "\n".join(lines)
+
+    # Fallback for any unknown tool
+    return json.dumps(data, indent=2)
 
 
 @router.post("/ask", response_model=AIQueryResponse)
@@ -151,13 +215,9 @@ async def ask_assistant(
         tool_call = json.loads(llm_response.strip())
         if "tool" in tool_call and "parameters" in tool_call:
             result = execute_tool(tool_call["tool"], tool_call["parameters"], context)
-            final_answer = await ask_llm(
-                f"Data: {json.dumps(result)}\n\nUser question: {payload.question}\n\nGive a short, friendly answer.",
-                system="You are a helpful school assistant. Use the data provided to answer the user's question clearly."
-            )
-            if final_answer:
-                return AIQueryResponse(answer=final_answer.strip(), related_data={"source": "llm+tool", "tool_used": tool_call["tool"]})
-            return AIQueryResponse(answer=json.dumps(result), related_data={"source": "tool", "tool_used": tool_call["tool"]})
+            # Format the result directly into a clean answer – no second LLM call
+            clean_answer = format_tool_result(tool_call["tool"], result)
+            return AIQueryResponse(answer=clean_answer, related_data={"source": "tool", "tool_used": tool_call["tool"]})
     except (json.JSONDecodeError, KeyError, TypeError):
         pass
 
