@@ -7,6 +7,7 @@ from app.services.ai_assistant_service import answer_question   # rule‑based f
 from app.services.llm_client import ask_llm
 from app.services.tool_handler import execute_tool
 import json
+import re
 
 router = APIRouter(prefix="/ai-assistant", tags=["AI Assistant"])
 
@@ -68,16 +69,15 @@ TOOLS = [
     }
 ]
 
+# Relaxed system prompt – allows natural answers or tool calls
 SYSTEM_PROMPT = (
-    "You are Ar‑Learn, an AI assistant that answers questions about a school. "
-    "You have access to tools that can fetch real data from the school's database. "
-    "When a user asks a question that requires data (e.g., 'best student', 'top class', 'attendance', 'fees'), "
-    "you MUST respond with a JSON object containing the tool name and parameters. "
-    "Do NOT make up an answer. If you are not sure, also return a JSON tool call.\n\n"
-    "Example:\n"
-    "User: Who is the best student?\n"
-    "Assistant: {\"tool\": \"get_top_students\", \"parameters\": {\"limit\": 1}}\n\n"
-    "If the question is purely general knowledge (e.g., 'What is chemistry?'), answer normally. "
+    "You are Ar‑Learn, a helpful assistant for a Kenyan school. "
+    "You can answer general questions about the school using natural language, "
+    "or you can fetch specific data using the provided tools. "
+    "If the user asks for information that requires data (like 'best student', 'top class', 'who failed', 'how many paid fees', etc.), "
+    "reply ONLY with a JSON object like {\"tool\": \"<tool_name>\", \"parameters\": { ... }}. "
+    "For all other questions (e.g., 'hello', 'how are you', 'what is chemistry'), answer in plain English. "
+    "You MUST NOT include any extra text when returning JSON. "
     "Never ask for credentials or sensitive codes."
 )
 
@@ -165,6 +165,24 @@ def format_tool_result(tool_name: str, data: dict) -> str:
     return json.dumps(data, indent=2)
 
 
+# Very simple keyword‑based fallback when the LLM fails completely
+def fallback_tool_call(question: str) -> Optional[dict]:
+    q = question.lower()
+    if any(w in q for w in ["best student", "top student", "who lead", "who best"]):
+        return {"tool": "get_top_students", "parameters": {"limit": 1}}
+    if any(w in q for w in ["class rank", "best class", "top class", "worst class"]):
+        return {"tool": "get_class_ranking", "parameters": {"term": "Term 1 2025"}}
+    if any(w in q for w in ["teacher perf", "teacher value", "value add"]):
+        return {"tool": "get_teacher_performance", "parameters": {"term": "Term 1 2025"}}
+    if any(w in q for w in ["fee", "paid", "balance", "deficit"]):
+        return {"tool": "get_fee_summary", "parameters": {"term": "Term 1 2025"}}
+    if any(w in q for w in ["attend", "absent", "present"]):
+        return {"tool": "get_attendance_summary", "parameters": {}}
+    if any(w in q for w in ["school overview", "school mean", "overall"]):
+        return {"tool": "get_school_overview", "parameters": {}}
+    return None
+
+
 @router.post("/ask", response_model=AIQueryResponse)
 async def ask_assistant(
     payload: AIQueryRequest,
@@ -199,24 +217,24 @@ async def ask_assistant(
         "teacher_id": teacher["id"],
     }
 
-    # 1. Ask Llama with clear instructions
+    # 1. Ask the LLM (Llama → Gemini → Groq)
     full_prompt = (
         f"Available tools: {json.dumps(TOOLS)}\n\n"
         f"User question: \"{payload.question}\"\n\n"
-        "Respond with JSON if you need a tool, otherwise answer normally."
+        "Reply with a JSON tool call or a natural language answer."
     )
 
     llm_response = await ask_llm(full_prompt, system=SYSTEM_PROMPT)
 
-    # 2. Try to parse JSON (tool call)
+    # 2. Try to extract a JSON tool call from the response
     if llm_response:
+        clean = llm_response.strip()
+        # Remove possible markdown code fences
+        if clean.startswith("```json"):
+            clean = clean[7:]
+        if clean.endswith("```"):
+            clean = clean[:-3]
         try:
-            # Sometimes Llama wraps the JSON in backticks or adds extra text – clean it
-            clean = llm_response.strip()
-            if clean.startswith("```json"):
-                clean = clean[7:]
-            if clean.endswith("```"):
-                clean = clean[:-3]
             tool_call = json.loads(clean)
             if "tool" in tool_call and "parameters" in tool_call:
                 result = execute_tool(tool_call["tool"], tool_call["parameters"], context)
@@ -227,10 +245,19 @@ async def ask_assistant(
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    # 3. If Llama gave a direct answer that seems plausible (not empty), return it
+    # 3. If the LLM returned a plain English answer, use it
     if llm_response and len(llm_response) > 5 and not llm_response.startswith("{"):
         return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
 
-    # 4. Fallback to rule‑based
+    # 4. Last resort: keyword‑based fallback (still secure, read‑only)
+    fb = fallback_tool_call(payload.question)
+    if fb:
+        result = execute_tool(fb["tool"], fb["parameters"], context)
+        return AIQueryResponse(
+            answer=format_tool_result(fb["tool"], result),
+            related_data={"source": "keyword"}
+        )
+
+    # 5. Ultimate fallback: rule‑based assistant
     fallback = answer_question(payload.school_id, payload.question)
     return AIQueryResponse(answer=fallback["answer"], related_data=fallback["related_data"])
