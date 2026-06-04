@@ -6,6 +6,7 @@ from app.core.database import get_supabase
 from app.core.config import settings
 from app.core.security import verify_password, hash_password
 from app.services.rate_limit_service import list_banned_ips, unban_ip
+from app.services.email_service import send_email
 import os
 
 router = APIRouter(prefix="/admin", tags=["super-admin"])
@@ -80,7 +81,7 @@ from app.schemas.school import SchoolRegistrationResponse  # reuse maybe
 @router.get("/schools")
 async def list_all_schools(_: bool = Depends(verify_admin_token)):
     db = get_supabase()
-    schools = db.table("schools").select("id, name, county, student_count, teacher_count, is_active, is_premium, created_at").execute().data or []
+    schools = db.table("schools").select("id, name, county, student_count, teacher_count, is_active, is_premium, email, phone, created_at").execute().data or []
     return schools
 
 @router.put("/schools/{school_id}/suspend")
@@ -169,6 +170,40 @@ async def update_school_branding(school_id: str, payload: BrandingUpdate, _: boo
         raise HTTPException(status_code=404, detail="School not found")
     return {"message": "Branding updated", "school": result.data[0]}
 
+class SendEmailRequest(BaseModel):
+    to: str          # "all", "school:<school_id>", or a custom email address
+    subject: str
+    body: str
+
+@router.post("/send-email")
+async def admin_send_email(payload: SendEmailRequest, _: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    recipients = []
+
+    if payload.to == "all":
+        # Fetch all school emails (non‑null and non‑empty)
+        schools = db.table("schools").select("email, name").not_.is_("email", "null").execute().data or []
+        recipients = [(s["email"], s["name"]) for s in schools if s.get("email")]
+    elif payload.to.startswith("school:"):
+        school_id = payload.to.split(":", 1)[1]
+        school = db.table("schools").select("email, name").eq("id", school_id).single().execute()
+        if school.data and school.data.get("email"):
+            recipients = [(school.data["email"], school.data["name"])]
+    else:
+        # Assume it's a direct email address
+        recipients = [(payload.to, payload.to)]
+
+    if not recipients:
+        raise HTTPException(status_code=400, detail="No valid recipients found")
+
+    sent_count = 0
+    for email, name in recipients:
+        # Personalize slightly
+        body = f"Dear {name},\n\n{payload.body}\n\n-- Ar‑Learn Team"
+        if send_email(email, payload.subject, body):
+            sent_count += 1
+
+    return {"message": f"Email sent to {sent_count} recipient(s)"}
 @router.get("/banned-ips")
 async def get_banned_ips(_: bool = Depends(verify_admin_token)):
     return list_banned_ips()
