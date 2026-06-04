@@ -2,7 +2,7 @@ import httpx
 import os
 
 LLM_SERVER_URL = os.getenv("LLM_SERVER_URL", "https://arlearn-arlearn.hf.space/generate")
-LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "120"))   # seconds
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "1000"))   # seconds
 
 async def ask_llm(prompt: str, system: str = "") -> str:
     """
