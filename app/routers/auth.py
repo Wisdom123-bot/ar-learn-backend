@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel
 from typing import Optional
 from app.core.database import get_supabase
+from app.services.rate_limit_service import is_ip_banned, record_failed_attempt, reset_attempts
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -47,9 +48,21 @@ class UnifiedLoginResponse(BaseModel):
     logo_url: Optional[str] = None
 
 
+def get_client_ip(request: Request) -> str:
+    """Extract real client IP from Render's x-forwarded-for header."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host
+
+
 # ---------- Legacy Teacher Login ----------
 @router.post("/teacher/login", response_model=TeacherLoginResponse)
-async def teacher_login(payload: TeacherLoginRequest):
+async def teacher_login(payload: TeacherLoginRequest, request: Request):
+    ip = get_client_ip(request)
+    if is_ip_banned(ip):
+        raise HTTPException(status_code=403, detail="Too many failed attempts. Please try again later.")
+
     db = get_supabase()
 
     result = (
@@ -60,6 +73,7 @@ async def teacher_login(payload: TeacherLoginRequest):
     )
 
     if not result.data:
+        record_failed_attempt(ip)
         raise HTTPException(status_code=401, detail="Invalid teacher code.")
 
     teacher = result.data[0]
@@ -68,6 +82,7 @@ async def teacher_login(payload: TeacherLoginRequest):
     if school_data and not school_data.get("is_active", True):
         raise HTTPException(status_code=403, detail="School account is suspended.")
 
+    reset_attempts(ip)
     return TeacherLoginResponse(
         teacher_id=teacher["id"],
         name=teacher["name"],
@@ -101,7 +116,11 @@ async def search_schools(name: str):
 
 # ---------- Unified Role‑Based Login ----------
 @router.post("/login", response_model=UnifiedLoginResponse)
-async def unified_login(payload: UnifiedLoginRequest):
+async def unified_login(payload: UnifiedLoginRequest, request: Request):
+    ip = get_client_ip(request)
+    if is_ip_banned(ip):
+        raise HTTPException(status_code=403, detail="Too many failed attempts. Please try again later.")
+
     db = get_supabase()
 
     # 1. Validate school
@@ -132,9 +151,11 @@ async def unified_login(payload: UnifiedLoginRequest):
     )
 
     if not result.data:
+        record_failed_attempt(ip)
         raise HTTPException(status_code=401, detail="Invalid credentials for the selected role.")
 
     teacher = result.data[0]
+    reset_attempts(ip)
 
     return UnifiedLoginResponse(
         teacher_id=teacher["id"],
