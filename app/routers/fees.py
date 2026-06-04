@@ -207,17 +207,17 @@ async def get_term_fee(school_id: str = Query(...), term: str = Query(...)):
 @router.get("/deficit")
 async def get_school_deficit(school_id: str = Query(...), term: str = Query(...)):
     db = get_supabase()
-    # Get term fee
-    tf = db.table("term_fees").select("amount").eq("school_id", school_id).eq("term", term).single().execute()
-    term_fee = tf.data["amount"] if tf.data else 0
+    # Get term fee – safely handle missing row
+    tf_result = db.table("term_fees").select("amount").eq("school_id", school_id).eq("term", term).limit(1).execute()
+    term_fee = tf_result.data[0]["amount"] if tf_result.data else 0
 
     if term_fee == 0:
-        return {"total_expected": 0, "total_collected": 0, "deficit": 0, "term_fee": 0}
+        return {"term_fee": 0, "total_expected": 0, "total_collected": 0, "deficit": 0}
 
     # Get all students of the school
     students = db.table("students").select("id").eq("school_id", school_id).execute().data
     if not students:
-        return {"total_expected": 0, "total_collected": 0, "deficit": 0, "term_fee": term_fee}
+        return {"term_fee": term_fee, "total_expected": 0, "total_collected": 0, "deficit": 0}
 
     student_ids = [s["id"] for s in students]
     # Get all payments for this term
