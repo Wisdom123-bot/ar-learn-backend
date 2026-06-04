@@ -76,14 +76,14 @@ def generate_student_report_pdf(student_id: str, term: str, template_id: Optiona
         attendance_pct = round((present / total) * 100, 1) if total > 0 else 0
         attendance_total = total
 
-    # 6. Fetch fee status if needed
+    # 6. Fetch fee status if needed (SAFE QUERY – no crash when missing)
     fee_balance = None
     fee_cleared = None
     if show_fee_status:
-        fee = db.table("fee_balances").select("balance, cleared").eq("student_id", student_id).eq("term", term).single().execute()
-        if fee.data:
-            fee_balance = fee.data["balance"]
-            fee_cleared = fee.data["cleared"]
+        fee_result = db.table("fee_balances").select("balance, cleared").eq("student_id", student_id).eq("term", term).limit(1).execute()
+        fee_data = fee_result.data[0] if fee_result.data else {"balance": 0, "cleared": False}
+        fee_balance = fee_data["balance"]
+        fee_cleared = fee_data["cleared"]
 
     # --- Build PDF ---
     buffer = io.BytesIO()
