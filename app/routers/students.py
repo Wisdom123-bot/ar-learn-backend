@@ -18,7 +18,26 @@ async def get_student_by_admission(admission: str = Query(...)):
     if not result.data:
         raise HTTPException(status_code=404, detail="Student not found")
     return result.data[0]
-
+@router.get("/search")
+async def search_students(q: str = Query(..., min_length=2)):
+    db = get_supabase()
+    # Search by name OR admission number (case‑insensitive)
+    result = (
+        db.table("students")
+        .select("id, name, admission_number, classes(name)")
+        .or_(f"name.ilike.%{q}%,admission_number.ilike.%{q}%")
+        .limit(10)
+        .execute()
+        .data or []
+    )
+    # Flatten class name
+    for s in result:
+        if s.get("classes"):
+            s["class_name"] = s["classes"]["name"]
+            del s["classes"]
+        else:
+            s["class_name"] = ""
+    return result
 
 @router.get("/school/{school_id}")
 async def list_school_students(school_id: str):
