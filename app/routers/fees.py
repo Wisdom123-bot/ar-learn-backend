@@ -3,6 +3,7 @@ import string
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 from app.core.database import get_supabase
+from pydantic import BaseModel
 from app.services.notification_service import create_notification
 from app.schemas.fee import FeeBalanceCreate, FeePaymentCreate, FeeStatus
 
@@ -179,3 +180,57 @@ async def class_fee_status(class_id: str, term: str = Query(...)):
         except Exception:
             pass
     return result
+
+
+class TermFeeRequest(BaseModel):
+    amount: float
+
+@router.post("/term-fee")
+async def set_term_fee(school_id: str = Query(...), term: str = Query(...), payload: TermFeeRequest = None):
+    db = get_supabase()
+    existing = db.table("term_fees").select("id").eq("school_id", school_id).eq("term", term).execute()
+    data = {"school_id": school_id, "term": term, "amount": payload.amount}
+    if existing.data:
+        db.table("term_fees").update(data).eq("id", existing.data[0]["id"]).execute()
+    else:
+        db.table("term_fees").insert(data).execute()
+    return {"message": "Term fee set", "amount": payload.amount}
+
+@router.get("/term-fee")
+async def get_term_fee(school_id: str = Query(...), term: str = Query(...)):
+    db = get_supabase()
+    result = db.table("term_fees").select("amount").eq("school_id", school_id).eq("term", term).single().execute()
+    if result.data:
+        return {"amount": result.data["amount"]}
+    return {"amount": 0}
+
+@router.get("/deficit")
+async def get_school_deficit(school_id: str = Query(...), term: str = Query(...)):
+    db = get_supabase()
+    # Get term fee
+    tf = db.table("term_fees").select("amount").eq("school_id", school_id).eq("term", term).single().execute()
+    term_fee = tf.data["amount"] if tf.data else 0
+
+    if term_fee == 0:
+        return {"total_expected": 0, "total_collected": 0, "deficit": 0, "term_fee": 0}
+
+    # Get all students of the school
+    students = db.table("students").select("id").eq("school_id", school_id).execute().data
+    if not students:
+        return {"total_expected": 0, "total_collected": 0, "deficit": 0, "term_fee": term_fee}
+
+    student_ids = [s["id"] for s in students]
+    # Get all payments for this term
+    payments = db.table("fee_payments").select("amount").in_("student_id", student_ids).eq("term", term).execute().data or []
+    total_collected = sum(p["amount"] for p in payments)
+
+    total_expected = len(students) * term_fee
+    deficit = max(0, total_expected - total_collected)
+
+    return {
+        "term_fee": term_fee,
+        "total_expected": total_expected,
+        "total_collected": total_collected,
+        "deficit": deficit,
+        "student_count": len(students)
+    }
