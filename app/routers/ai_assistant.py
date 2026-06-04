@@ -10,9 +10,8 @@ import json
 
 router = APIRouter(prefix="/ai-assistant", tags=["AI Assistant"])
 
-security = HTTPBearer(auto_error=False)   # token is optional for guests
+security = HTTPBearer(auto_error=False)
 
-# Actual tool definitions
 TOOLS = [
     {
         "name": "get_school_overview",
@@ -70,21 +69,22 @@ TOOLS = [
 ]
 
 SYSTEM_PROMPT = (
-    "You are Ar‑Learn, an AI assistant for a Kenyan school. "
-    "You can answer general questions and use tools to fetch real school data. "
-    "When a user asks for specific information about their school (students, results, attendance, fees, teacher performance), "
-    "respond ONLY with a JSON object containing 'tool' (the tool name) and 'parameters' (a dict). "
-    "Do not add any extra text. If the question is general knowledge, answer normally. "
+    "You are Ar‑Learn, an AI assistant that answers questions about a school. "
+    "You have access to tools that can fetch real data from the school's database. "
+    "When a user asks a question that requires data (e.g., 'best student', 'top class', 'attendance', 'fees'), "
+    "you MUST respond with a JSON object containing the tool name and parameters. "
+    "Do NOT make up an answer. If you are not sure, also return a JSON tool call.\n\n"
+    "Example:\n"
+    "User: Who is the best student?\n"
+    "Assistant: {\"tool\": \"get_top_students\", \"parameters\": {\"limit\": 1}}\n\n"
+    "If the question is purely general knowledge (e.g., 'What is chemistry?'), answer normally. "
     "Never ask for credentials or sensitive codes."
 )
 
 GUEST_SYSTEM_PROMPT = (
-    "You are Ar‑Learn, an AI assistant for a school management platform. "
-    "The user is NOT logged in. Answer only general questions about the platform: "
-    "what it does, its features, who it helps, how to get started, etc. "
-    "If the user asks for specific school data (results, attendance, fees, students), "
-    "politely explain that they need to log in first. "
-    "Keep answers friendly, helpful, and brief."
+    "You are Ar‑Learn, a school management platform assistant. "
+    "The user is NOT logged in. Answer only general questions about the platform. "
+    "If the user asks for school data, politely tell them to log in."
 )
 
 
@@ -100,13 +100,11 @@ async def get_teacher_from_token(
     return teacher.data
 
 
-# ----- Helper to format raw tool results into a clean, human‑readable answer -----
 def format_tool_result(tool_name: str, data: dict) -> str:
-    """Convert raw tool result dict into a friendly plain‑text answer."""
     if tool_name == "get_top_students":
         students = data.get("top_students", [])
         if not students:
-            return "No student results found for that query."
+            return "No student results found."
         lines = ["Here are the top students:"]
         for i, s in enumerate(students, 1):
             lines.append(f"{i}. {s['student_name']} ({s['class_name']}) – Mean: {s['mean_score']}%")
@@ -149,7 +147,7 @@ def format_tool_result(tool_name: str, data: dict) -> str:
     if tool_name == "get_class_ranking":
         ranking = data.get("class_ranking", [])
         if not ranking:
-            return "No class ranking data available."
+            return "No class ranking data."
         lines = ["📊 Class Rankings:"]
         for r in ranking:
             lines.append(f"{r['rank']}. {r['class_name']} – {r['mean_score']}%")
@@ -158,13 +156,12 @@ def format_tool_result(tool_name: str, data: dict) -> str:
     if tool_name == "get_teacher_performance":
         teachers = data.get("teachers", [])
         if not teachers:
-            return "No teacher performance data available."
+            return "No teacher performance data."
         lines = ["👩‍🏫 Teacher Performance:"]
         for t in teachers:
             lines.append(f"• {t['teacher_name']} – Mean: {t['current_mean']}%, Value‑Add: {t.get('value_add', 'N/A')}")
         return "\n".join(lines)
 
-    # Fallback for any unknown tool
     return json.dumps(data, indent=2)
 
 
@@ -202,28 +199,38 @@ async def ask_assistant(
         "teacher_id": teacher["id"],
     }
 
+    # 1. Ask Llama with clear instructions
     full_prompt = (
         f"Available tools: {json.dumps(TOOLS)}\n\n"
-        f"User question: {payload.question}\n\n"
+        f"User question: \"{payload.question}\"\n\n"
         "Respond with JSON if you need a tool, otherwise answer normally."
     )
 
     llm_response = await ask_llm(full_prompt, system=SYSTEM_PROMPT)
 
-    # Try to parse JSON (tool call)
-    try:
-        tool_call = json.loads(llm_response.strip())
-        if "tool" in tool_call and "parameters" in tool_call:
-            result = execute_tool(tool_call["tool"], tool_call["parameters"], context)
-            # Format the result directly into a clean answer – no second LLM call
-            clean_answer = format_tool_result(tool_call["tool"], result)
-            return AIQueryResponse(answer=clean_answer, related_data={"source": "tool", "tool_used": tool_call["tool"]})
-    except (json.JSONDecodeError, KeyError, TypeError):
-        pass
-
+    # 2. Try to parse JSON (tool call)
     if llm_response:
+        try:
+            # Sometimes Llama wraps the JSON in backticks or adds extra text – clean it
+            clean = llm_response.strip()
+            if clean.startswith("```json"):
+                clean = clean[7:]
+            if clean.endswith("```"):
+                clean = clean[:-3]
+            tool_call = json.loads(clean)
+            if "tool" in tool_call and "parameters" in tool_call:
+                result = execute_tool(tool_call["tool"], tool_call["parameters"], context)
+                return AIQueryResponse(
+                    answer=format_tool_result(tool_call["tool"], result),
+                    related_data={"source": "tool", "tool_used": tool_call["tool"]}
+                )
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+
+    # 3. If Llama gave a direct answer that seems plausible (not empty), return it
+    if llm_response and len(llm_response) > 5 and not llm_response.startswith("{"):
         return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
 
-    # Fallback to rule‑based
+    # 4. Fallback to rule‑based
     fallback = answer_question(payload.school_id, payload.question)
     return AIQueryResponse(answer=fallback["answer"], related_data=fallback["related_data"])
