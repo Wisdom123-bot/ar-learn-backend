@@ -10,9 +10,64 @@ import json
 
 router = APIRouter(prefix="/ai-assistant", tags=["AI Assistant"])
 
-security = HTTPBearer(auto_error=False)   # token is optional now
+security = HTTPBearer(auto_error=False)   # token is optional for guests
 
-TOOLS = [ ... ]   # keep your existing TOOLS list unchanged
+# Actual tool definitions
+TOOLS = [
+    {
+        "name": "get_school_overview",
+        "description": "Get overall school performance including mean score, best/worst class and subject.",
+        "parameters": {}
+    },
+    {
+        "name": "get_top_students",
+        "description": "Get top performing students overall or in a specific class/subject.",
+        "parameters": {
+            "class_id": {"type": "string", "description": "Optional class UUID"},
+            "subject_id": {"type": "string", "description": "Optional subject UUID"},
+            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"},
+            "limit": {"type": "integer", "description": "Number of students, max 20"}
+        }
+    },
+    {
+        "name": "get_student_profile",
+        "description": "Get a student's results, attendance, and fee status.",
+        "parameters": {
+            "student_name": {"type": "string", "description": "Student's full name or part of it"},
+            "admission_number": {"type": "string", "description": "Student admission number"},
+            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"}
+        }
+    },
+    {
+        "name": "get_attendance_summary",
+        "description": "Get attendance summary for a class or the whole school.",
+        "parameters": {
+            "class_id": {"type": "string", "description": "Optional class UUID"}
+        }
+    },
+    {
+        "name": "get_fee_summary",
+        "description": "Get total outstanding fees and number of cleared students.",
+        "parameters": {
+            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"}
+        }
+    },
+    {
+        "name": "get_class_ranking",
+        "description": "Get all classes ranked by mean score.",
+        "parameters": {
+            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"}
+        }
+    },
+    {
+        "name": "get_teacher_performance",
+        "description": "Get teacher value-add scores. Only available for headteachers.",
+        "parameters": {
+            "term": {"type": "string", "description": "Current term, e.g. 'Term 1 2025'"},
+            "previous_term": {"type": "string", "description": "Previous term for comparison, e.g. 'Term 3 2024'"}
+        }
+    }
+]
 
 SYSTEM_PROMPT = (
     "You are Ar‑Learn, an AI assistant for a Kenyan school. "
@@ -59,11 +114,9 @@ async def ask_assistant(
 
     # ----- Guest mode (no token) -----
     if teacher is None:
-        # For guests, only answer general platform questions
         llm_response = await ask_llm(payload.question, system=GUEST_SYSTEM_PROMPT)
         if llm_response:
             return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
-        # Fallback to a generic answer
         return AIQueryResponse(
             answer="Ar‑Learn is a school management and analytics platform for Kenyan schools. "
                    "It helps with results, CBC assessments, attendance, fees, and more. "
@@ -85,7 +138,6 @@ async def ask_assistant(
         "teacher_id": teacher["id"],
     }
 
-    # 1. Ask the LLM with tool descriptions
     full_prompt = (
         f"Available tools: {json.dumps(TOOLS)}\n\n"
         f"User question: {payload.question}\n\n"
@@ -94,7 +146,7 @@ async def ask_assistant(
 
     llm_response = await ask_llm(full_prompt, system=SYSTEM_PROMPT)
 
-    # 2. Try to parse JSON (tool call)
+    # Try to parse JSON (tool call)
     try:
         tool_call = json.loads(llm_response.strip())
         if "tool" in tool_call and "parameters" in tool_call:
@@ -109,10 +161,9 @@ async def ask_assistant(
     except (json.JSONDecodeError, KeyError, TypeError):
         pass
 
-    # 3. If the LLM answered directly
     if llm_response:
         return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
 
-    # 4. Fallback to rule-based
+    # Fallback to rule‑based
     fallback = answer_question(payload.school_id, payload.question)
     return AIQueryResponse(answer=fallback["answer"], related_data=fallback["related_data"])
