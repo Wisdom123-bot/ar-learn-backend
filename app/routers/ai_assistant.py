@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import Optional
 from app.core.database import get_supabase
 from app.schemas.ai_assistant import AIQueryRequest, AIQueryResponse
 from app.services.ai_assistant_service import answer_question   # rule‑based fallback
@@ -9,64 +10,9 @@ import json
 
 router = APIRouter(prefix="/ai-assistant", tags=["AI Assistant"])
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)   # token is optional now
 
-# Define the tools available to the LLM (unchanged)
-TOOLS = [
-    {
-        "name": "get_school_overview",
-        "description": "Get overall school performance including mean score, best/worst class and subject.",
-        "parameters": {}
-    },
-    {
-        "name": "get_top_students",
-        "description": "Get top performing students overall or in a specific class/subject.",
-        "parameters": {
-            "class_id": {"type": "string", "description": "Optional class UUID"},
-            "subject_id": {"type": "string", "description": "Optional subject UUID"},
-            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"},
-            "limit": {"type": "integer", "description": "Number of students, max 20"}
-        }
-    },
-    {
-        "name": "get_student_profile",
-        "description": "Get a student's results, attendance, and fee status.",
-        "parameters": {
-            "student_name": {"type": "string", "description": "Student's full name or part of it"},
-            "admission_number": {"type": "string", "description": "Student admission number"},
-            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"}
-        }
-    },
-    {
-        "name": "get_attendance_summary",
-        "description": "Get attendance summary for a class or the whole school.",
-        "parameters": {
-            "class_id": {"type": "string", "description": "Optional class UUID"}
-        }
-    },
-    {
-        "name": "get_fee_summary",
-        "description": "Get total outstanding fees and number of cleared students.",
-        "parameters": {
-            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"}
-        }
-    },
-    {
-        "name": "get_class_ranking",
-        "description": "Get all classes ranked by mean score.",
-        "parameters": {
-            "term": {"type": "string", "description": "Term, e.g. 'Term 1 2025'"}
-        }
-    },
-    {
-        "name": "get_teacher_performance",
-        "description": "Get teacher value-add scores. Only available for headteachers.",
-        "parameters": {
-            "term": {"type": "string", "description": "Current term, e.g. 'Term 1 2025'"},
-            "previous_term": {"type": "string", "description": "Previous term for comparison, e.g. 'Term 3 2024'"}
-        }
-    }
-]
+TOOLS = [ ... ]   # keep your existing TOOLS list unchanged
 
 SYSTEM_PROMPT = (
     "You are Ar‑Learn, an AI assistant for a Kenyan school. "
@@ -77,18 +23,29 @@ SYSTEM_PROMPT = (
     "Never ask for credentials or sensitive codes."
 )
 
+GUEST_SYSTEM_PROMPT = (
+    "You are Ar‑Learn, an AI assistant for a school management platform. "
+    "The user is NOT logged in. Answer only general questions about the platform: "
+    "what it does, its features, who it helps, how to get started, etc. "
+    "If the user asks for specific school data (results, attendance, fees, students), "
+    "politely explain that they need to log in first. "
+    "Keep answers friendly, helpful, and brief."
+)
+
 
 async def get_teacher_from_token(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Optional[dict]:
     """
-    Verify the Bearer token and return the teacher record.
-    The token is the teacher's UUID (same as teacher_id from login).
+    If a valid token is provided, return the teacher record.
+    If no token or invalid, return None (guest user).
     """
+    if credentials is None:
+        return None
     db = get_supabase()
     teacher = db.table("teachers").select("*").eq("id", credentials.credentials).single().execute()
     if not teacher.data:
-        raise HTTPException(status_code=401, detail="Invalid teacher token")
+        return None
     return teacher.data
 
 
@@ -96,11 +53,25 @@ async def get_teacher_from_token(
 async def ask_assistant(
     payload: AIQueryRequest,
     request: Request,
-    teacher: dict = Depends(get_teacher_from_token),
+    teacher: Optional[dict] = Depends(get_teacher_from_token),
 ):
     db = get_supabase()
 
-    # Ensure the school in the request matches the teacher's school
+    # ----- Guest mode (no token) -----
+    if teacher is None:
+        # For guests, only answer general platform questions
+        llm_response = await ask_llm(payload.question, system=GUEST_SYSTEM_PROMPT)
+        if llm_response:
+            return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
+        # Fallback to a generic answer
+        return AIQueryResponse(
+            answer="Ar‑Learn is a school management and analytics platform for Kenyan schools. "
+                   "It helps with results, CBC assessments, attendance, fees, and more. "
+                   "Log in to ask specific questions about your school!",
+            related_data={"source": "fallback"}
+        )
+
+    # ----- Authenticated mode -----
     if teacher["school_id"] != payload.school_id:
         raise HTTPException(status_code=403, detail="Access denied: wrong school")
 
@@ -108,7 +79,6 @@ async def ask_assistant(
     if not school.data:
         raise HTTPException(status_code=404, detail="School not found")
 
-    # Build secure context
     context = {
         "school_id": payload.school_id,
         "role": teacher["role"],
@@ -128,19 +98,15 @@ async def ask_assistant(
     try:
         tool_call = json.loads(llm_response.strip())
         if "tool" in tool_call and "parameters" in tool_call:
-            # Execute the tool safely (with role and school_id)
             result = execute_tool(tool_call["tool"], tool_call["parameters"], context)
-            # Ask the LLM to phrase the result nicely
             final_answer = await ask_llm(
                 f"Data: {json.dumps(result)}\n\nUser question: {payload.question}\n\nGive a short, friendly answer.",
                 system="You are a helpful school assistant. Use the data provided to answer the user's question clearly."
             )
             if final_answer:
                 return AIQueryResponse(answer=final_answer.strip(), related_data={"source": "llm+tool", "tool_used": tool_call["tool"]})
-            # If LLM phrasing fails, return the raw data
             return AIQueryResponse(answer=json.dumps(result), related_data={"source": "tool", "tool_used": tool_call["tool"]})
     except (json.JSONDecodeError, KeyError, TypeError):
-        # Not a tool call – treat as a direct answer
         pass
 
     # 3. If the LLM answered directly
