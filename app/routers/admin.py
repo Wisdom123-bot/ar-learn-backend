@@ -209,3 +209,8 @@ async def change_admin_password(
     del admin_tokens[token]
 
     return {"message": "Password changed successfully. Please log in again."}
+@router.get("/debug-login-attempts")
+async def debug_login_attempts(_: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    result = db.table("login_attempts").select("*").execute()
+    return {"raw_data": result.data, "count": len(result.data or [])}    
