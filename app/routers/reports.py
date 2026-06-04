@@ -1,5 +1,6 @@
 import io
 import zipfile
+import tempfile
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import Optional
@@ -33,7 +34,6 @@ async def get_class_reports(
     template_id: Optional[str] = Query(None),
 ):
     db = get_supabase()
-
     cls = db.table("classes").select("id, name").eq("id", class_id).execute()
     if not cls.data:
         raise HTTPException(status_code=404, detail="Class not found")
@@ -42,8 +42,9 @@ async def get_class_reports(
     if not students:
         raise HTTPException(status_code=404, detail="No students found in this class")
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Use a temporary file that will spill to disk if it grows too large
+    tmp = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)  # 10 MB in memory, then disk
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for student in students:
             try:
                 pdf_bytes = generate_student_report_pdf(student["id"], term, template_id)
@@ -52,10 +53,10 @@ async def get_class_reports(
             except Exception as e:
                 zf.writestr(f"{student['name']}_error.txt", f"Could not generate report: {e}")
 
-    zip_buffer.seek(0)
+    tmp.seek(0)
     class_name = cls.data[0]["name"]
     return StreamingResponse(
-        zip_buffer,
+        tmp,
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=reports_{class_name}_{term}.zip"},
     )
@@ -68,7 +69,6 @@ async def get_school_reports(
     template_id: Optional[str] = Query(None),
 ):
     db = get_supabase()
-
     school = db.table("schools").select("id, name").eq("id", school_id).execute()
     if not school.data:
         raise HTTPException(status_code=404, detail="School not found")
@@ -77,8 +77,9 @@ async def get_school_reports(
     if not students:
         raise HTTPException(status_code=404, detail="No students found in this school")
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Use a temporary file that will spill to disk if it grows too large
+    tmp = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)  # 10 MB in memory, then disk
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for student in students:
             try:
                 pdf_bytes = generate_student_report_pdf(student["id"], term, template_id)
@@ -87,10 +88,10 @@ async def get_school_reports(
             except Exception as e:
                 zf.writestr(f"{student['name']}_error.txt", f"Could not generate report: {e}")
 
-    zip_buffer.seek(0)
+    tmp.seek(0)
     school_name = school.data[0]["name"]
     return StreamingResponse(
-        zip_buffer,
+        tmp,
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=reports_{school_name}_{term}.zip"},
     )
