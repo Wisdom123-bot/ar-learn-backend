@@ -36,4 +36,10 @@ def unban_ip(ip: str):
 def list_banned_ips():
     db = get_supabase()
     now = datetime.now(timezone.utc).isoformat()
-    return db.table("login_attempts").select("*").not_.is_("banned_until", "null").gte("banned_until", now).execute().data or []
+    result = (
+        db.table("login_attempts")
+        .select("*")
+        .gte("banned_until", now)   # only rows where banned_until >= now
+        .execute()
+    )
+    return result.data or []
