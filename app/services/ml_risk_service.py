@@ -5,6 +5,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from app.core.database import get_supabase
 from app.utils.cache import get_cache, set_cache, redis_available
+from collections import defaultdict
 import threading
 import time
 
@@ -113,7 +114,7 @@ def train_model_async(school_id: str = None):
     def _train():
         db = get_supabase()
         # Get ALL students from every school
-        students = db.table("students").select("id, class_id").execute().data
+        students = db.table("students").select("id, class_id, school_id").execute().data
         if not students or len(students) < 50:
             print("ML: Not enough total students to train (need ≥50).")
             return
@@ -133,25 +134,37 @@ def train_model_async(school_id: str = None):
         current_term = sorted_terms[-1]
         previous_term = sorted_terms[-2]
 
-        subjects = db.table("subjects").select("id").execute().data
-        subject_ids = [s["id"] for s in subjects]
+        # Group students by school to fetch relevant subjects efficiently
+        students_by_school = defaultdict(list)
+        for s in students:
+            # Check if student has school_id, if not (legacy), skip or handle
+            sid = s.get("school_id")
+            if sid:
+                students_by_school[sid].append(s)
 
         X = []
         y = []
 
-        for student in students:
-            for subj in subject_ids:
-                # Features from previous_term
-                features = prepare_features(student["id"], subj, previous_term, db)
-                if features is None:
-                    continue
-                # Label: did student fail this subject in current_term?
-                curr_score = db.table("results").select("score").eq("student_id", student["id"]).eq("subject_id", subj).eq("term", current_term).maybe_single().execute()
-                if curr_score.data is None:
-                    continue
-                label = 1 if curr_score.data["score"] < 50 else 0
-                X.append(features)
-                y.append(label)
+        for school_id, school_students in students_by_school.items():
+            # Get subjects for THIS school
+            school_subjects = db.table("subjects").select("id").eq("school_id", school_id).execute().data or []
+            subject_ids = [sub["id"] for sub in school_subjects]
+            if not subject_ids:
+                continue
+
+            for student in school_students:
+                for subj in subject_ids:
+                    # Features from previous_term
+                    features = prepare_features(student["id"], subj, previous_term, db)
+                    if features is None:
+                        continue
+                    # Label: did student fail this subject in current_term?
+                    curr_score = db.table("results").select("score").eq("student_id", student["id"]).eq("subject_id", subj).eq("term", current_term).maybe_single().execute()
+                    if curr_score.data is None:
+                        continue
+                    label = 1 if curr_score.data["score"] < 50 else 0
+                    X.append(features)
+                    y.append(label)
 
         if len(X) < 50:
             print("ML: Not enough training samples (need ≥50).")

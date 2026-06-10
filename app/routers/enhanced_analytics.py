@@ -23,6 +23,12 @@ class ClassRank(BaseModel):
     rank: int
 
 
+class SubjectRank(BaseModel):
+    subject_id: UUID
+    subject_name: str
+    mean_score: float
+
+
 class TargetMeanRequest(BaseModel):
     target_mean_score: float
 
@@ -104,6 +110,44 @@ async def class_ranking(
     for i, c in enumerate(class_means):
         c.rank = i + 1
     return class_means
+
+
+@router.get("/subject-ranking")
+async def subject_ranking(
+    school_id: str = Query(...),
+    term: str = Query(...),
+):
+    db = get_supabase()
+    subjects = db.table("subjects").select("id, name").eq("school_id", school_id).execute().data or []
+    if not subjects:
+        return []
+
+    # Get all students for this school
+    student_ids = [s["id"] for s in db.table("students").select("id").eq("school_id", school_id).execute().data]
+    if not student_ids:
+        return []
+
+    subject_means = []
+    for subj in subjects:
+        results = (
+            db.table("results")
+            .select("score")
+            .in_("student_id", student_ids)
+            .eq("subject_id", subj["id"])
+            .eq("term", term)
+            .execute()
+            .data or []
+        )
+        mean = sum(r["score"] for r in results) / len(results) if results else 0
+        subject_means.append(SubjectRank(
+            subject_id=subj["id"],
+            subject_name=subj["name"],
+            mean_score=round(mean, 2)
+        ))
+
+    # Sort by mean descending
+    subject_means.sort(key=lambda x: x.mean_score, reverse=True)
+    return subject_means
 
 
 @router.put("/class/{class_id}/target-mean")

@@ -18,12 +18,19 @@ class SchoolRegistrationRequest(BaseModel):
     dean_name: Optional[str] = Field(None, example="Ms. Wanjiku")
     teacher_names: List[str] = Field(..., example=["John Doe", "Jane Smith"])
     classes: List[ClassCreate] = Field(..., example=[{"name": "Grade 1 Orange", "target_mean_score": 75.5}])
+    subjects: List[str] = Field(..., example=["Mathematics", "English", "Science"])
 
 class ClassResponse(BaseModel):
     id: UUID
     name: str
     target_mean_score: float
     created_at: datetime
+    class Config:
+        from_attributes = True
+
+class SubjectResponse(BaseModel):
+    id: UUID
+    name: str
     class Config:
         from_attributes = True
 
@@ -47,5 +54,6 @@ class SchoolRegistrationResponse(BaseModel):
     dean: Optional[TeacherResponse] = None
     teachers: List[TeacherResponse] = []
     classes: List[ClassResponse] = []
+    subjects: List[SubjectResponse] = []
     class Config:
         from_attributes = True

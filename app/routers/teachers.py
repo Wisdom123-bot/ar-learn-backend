@@ -145,7 +145,3 @@ async def get_assigned_students(teacher_id: str):
         ))
 
     return result
-@router.get("/subjects")
-async def list_subjects():
-    db = get_supabase()
-    return db.table("subjects").select("id, name").execute().data or []

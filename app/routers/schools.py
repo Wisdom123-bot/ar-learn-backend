@@ -7,6 +7,7 @@ from app.schemas.school import (
     SchoolRegistrationRequest,
     SchoolRegistrationResponse,
     ClassResponse,
+    SubjectResponse,
     TeacherResponse,
 )
 
@@ -99,6 +100,17 @@ async def register_school(payload: SchoolRegistrationRequest):
         except HTTPException:
             continue  # skip if fails
 
+    # 6. Insert subjects
+    subject_records = []
+    for subject_name in payload.subjects:
+        subject_data = {
+            "school_id": school_id,
+            "name": subject_name.strip(),
+        }
+        res = db.table("subjects").insert(subject_data).execute()
+        if res.data:
+            subject_records.append(res.data[0])
+
     # Build response
     return SchoolRegistrationResponse(
         message="School registered successfully",
@@ -111,6 +123,7 @@ async def register_school(payload: SchoolRegistrationRequest):
         dean=TeacherResponse(**dean_record) if dean_record else None,
         teachers=[TeacherResponse(**t) for t in teacher_records],
         classes=[ClassResponse(**c) for c in class_records],
+        subjects=[SubjectResponse(**s) for s in subject_records],
     )
 
 @router.get("/{school_id}/classes")

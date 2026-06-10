@@ -17,8 +17,11 @@ async def student_ml_risk(
     if not student.data:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    # Get all subjects this student has results for in this term
-    subjects = db.table("subjects").select("id, name").execute().data or []
+    # Get all subjects for THIS student's school
+    subjects = db.table("subjects").select("id, name").eq("school_id", student.data.get("school_id")).execute().data or []
+    if not subjects:
+        # Fallback to all subjects if school_id link is missing (should not happen with new registration)
+        subjects = db.table("subjects").select("id, name").execute().data or []
     subject_risks = []
     for subj in subjects:
         risk = predict_risk(student_id, subj["id"], term)
@@ -56,7 +59,17 @@ async def class_ml_risk(
     if not students:
         return {"class_name": cls.data[0]["name"], "students": [], "message": "No students in this class."}
 
-    subjects = db.table("subjects").select("id, name").execute().data or []
+    # Get all subjects for THIS class's school
+    # Assuming class table has school_id or students in class share school_id
+    school_id = cls.data[0].get("school_id")
+    if not school_id and students:
+        # Fallback to fetching school_id from first student
+        first_student = db.table("students").select("school_id").eq("id", students[0]["id"]).single().execute()
+        school_id = first_student.data.get("school_id") if first_student.data else None
+    
+    subjects = db.table("subjects").select("id, name").eq("school_id", school_id).execute().data or []
+    if not subjects:
+        subjects = db.table("subjects").select("id, name").execute().data or []
     result = []
     for student in students:
         student_risks = []
