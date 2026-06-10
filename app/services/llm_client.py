@@ -1,11 +1,12 @@
 import httpx
 import os
 import json
+import asyncio
 
-# Timeouts (seconds)
-TIMEOUT_LLAMA   =30
-TIMEOUT_GEMINI  = 30
-TIMEOUT_GROQ    = 30
+# Reduced Timeouts for snappiness (seconds)
+TIMEOUT_LLAMA   = 10
+TIMEOUT_GEMINI  = 12
+TIMEOUT_GROQ    = 10
 
 # URLs
 LLAMA_URL = os.getenv("LLM_SERVER_URL", "https://arlearn-arlearn.hf.space/generate")
@@ -19,23 +20,21 @@ GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 
 async def ask_llm(prompt: str, system: str = "") -> str:
     """
-    Try Llama first, then Gemini, then Groq.
-    Returns the first successful response, or empty string if all fail.
+    Poll multiple LLM providers in parallel and return the fastest successful response.
     """
-    # 1. Llama (Hugging Face Space)
-    answer = await _call_llama(prompt, system)
-    if answer:
-        return answer
+    tasks = [
+        _call_llama(prompt, system),
+        _call_gemini(prompt, system),
+        _call_groq(prompt, system)
+    ]
 
-    # 2. Gemini 2.0 Flash
-    answer = await _call_gemini(prompt, system)
-    if answer:
-        return answer
-
-    # 3. Groq (llama3‑8b‑8192 is fast and free)
-    answer = await _call_groq(prompt, system)
-    if answer:
-        return answer
+    for coro in asyncio.as_completed(tasks):
+        try:
+            answer = await coro
+            if answer and answer.strip():
+                return answer.strip()
+        except Exception:
+            continue
 
     return ""
 

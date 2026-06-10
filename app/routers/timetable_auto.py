@@ -88,20 +88,15 @@ async def generate_timetable(school_id: str, config: TimetableConfig):
         key = (a["class_id"], a["subject_id"])
         teacher_map.setdefault(key, []).append(a["teacher_id"])
 
-    # 3. If prioritize weak subjects, fetch weakest subjects for the school from previous term
-    weak_subjects = set()
+    # 3. If prioritize weak subjects, fetch weakest subjects per class
+    # performance_map: { class_id: { subject_id: mean_score } }
+    performance_map = {}
     if config.prioritize_weak_subjects and config.previous_term:
         try:
-            from app.services.analytics_service import get_school_overview
-            overview = get_school_overview(school_id)
-            worst_subj = overview.get("worst_subject")
-            if worst_subj:
-                # Fetch subject ID
-                subj = db.table("subjects").select("id").eq("name", worst_subj["subject_name"]).single().execute()
-                if subj.data:
-                    weak_subjects.add(subj.data["id"])
+            from app.services.analytics_service import get_class_subject_performance
+            performance_map = get_class_subject_performance(school_id, config.previous_term)
         except Exception:
-            pass  # silently ignore if analytics not available
+            pass
 
     # 4. Generate time slots
     slots = generate_time_slots(config)
@@ -114,7 +109,6 @@ async def generate_timetable(school_id: str, config: TimetableConfig):
     # 6. Generate timetable per class
     entries = []
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-    total_slots = len(slots) * len(days)
 
     for cls in classes:
         class_id = cls["id"]
@@ -127,24 +121,44 @@ async def generate_timetable(school_id: str, config: TimetableConfig):
             continue
 
         subject_list = list(class_subjects)
-        # If weak subjects exist, give them double weight (appear twice)
+        
+        # Identify weak subjects for THIS class (bottom 20% or score < 50)
+        class_performance = performance_map.get(class_id, {})
+        weak_in_class = []
+        if class_performance:
+            sorted_subjects = sorted(class_performance.items(), key=lambda x: x[1])
+            # Subjects with score < 50 or at least the worst one
+            weak_in_class = [sid for sid, score in sorted_subjects if score < 50]
+            if not weak_in_class and sorted_subjects:
+                weak_in_class = [sorted_subjects[0][0]]
+
+        # Weight subjects: weak subjects appear more often
         weighted = []
         for s in subject_list:
             weighted.append(s)
-            if s in weak_subjects:
-                weighted.append(s)   # extra slot
+            if s in weak_in_class:
+                weighted.append(s) # double frequency for weak subjects
+        
         random.shuffle(weighted)
 
-        slot_idx = 0
+        subject_idx = 0
         for day in days:
             for slot in slots:
-                if slot_idx >= len(weighted):
-                    break
-                subject_id = weighted[slot_idx % len(weighted)]
+                # Cycle through weighted list to fill ALL slots
+                subject_id = weighted[subject_idx % len(weighted)]
                 teachers = teacher_map.get((class_id, subject_id), [])
+                
+                # If no teacher assigned to this specific subject, try next weighted subject
+                attempt = 0
+                while not teachers and attempt < len(weighted):
+                    subject_idx += 1
+                    subject_id = weighted[subject_idx % len(weighted)]
+                    teachers = teacher_map.get((class_id, subject_id), [])
+                    attempt += 1
+                
                 if not teachers:
-                    slot_idx += 1
-                    continue
+                    continue # Should not happen if assignments exist
+                    
                 teacher_id = random.choice(teachers)
                 entries.append({
                     "school_id": school_id,
@@ -155,12 +169,13 @@ async def generate_timetable(school_id: str, config: TimetableConfig):
                     "start_time": slot[0],
                     "end_time": slot[1],
                 })
-                slot_idx += 1
+                subject_idx += 1
 
     if not entries:
         raise HTTPException(status_code=400, detail="Could not generate any timetable entries. Check assignments and configuration.")
 
     # 7. Batch insert
+    # Supabase/PostgREST handles batch insert with list of dicts
     db.table("timetable_entries").insert(entries).execute()
 
     return {"message": f"Timetable generated for {len(classes)} classes with {len(entries)} entries"}

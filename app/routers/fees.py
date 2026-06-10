@@ -187,13 +187,13 @@ class TermFeeRequest(BaseModel):
 
 @router.post("/term-fee")
 async def set_term_fee(
+    payload: TermFeeRequest,
     school_id: str = Query(...),
     term: str = Query(...),
-    payload: TermFeeRequest = None,
 ):
     db = get_supabase()
 
-    # 1. Store the term fee definition (for deficit calculation)
+    # 1. Store the term fee definition
     existing = db.table("term_fees").select("id").eq("school_id", school_id).eq("term", term).execute()
     data = {"school_id": school_id, "term": term, "amount": payload.amount}
     if existing.data:
@@ -201,24 +201,77 @@ async def set_term_fee(
     else:
         db.table("term_fees").insert(data).execute()
 
-    # 2. Apply the fee to all relevant students
+    # 2. Get students
+    query = db.table("students").select("id").eq("school_id", school_id)
     if payload.class_id:
-        students = db.table("students").select("id").eq("school_id", school_id).eq("class_id", str(payload.class_id)).execute().data
-    else:
-        students = db.table("students").select("id").eq("school_id", school_id).execute().data
+        query = query.eq("class_id", str(payload.class_id))
+    
+    students = query.execute().data or []
+    if not students:
+        return {"message": "No students found", "count": 0}
 
-    if students:
-        for s in students:
-            # Upsert fee_balances for this student + term
-            student_id = s["id"]
-            bal = db.table("fee_balances").select("id").eq("student_id", student_id).eq("term", term).execute()
-            bal_data = {"student_id": student_id, "term": term, "balance": payload.amount, "cleared": False}
-            if bal.data:
-                db.table("fee_balances").update(bal_data).eq("id", bal.data[0]["id"]).execute()
-            else:
-                db.table("fee_balances").insert(bal_data).execute()
+    # 3. Batch upsert fee_balances
+    # Note: Supabase doesn't have a true 'upsert' that handles 'WHERE student_id=X AND term=Y' 
+    # for a list in one go easily without unique constraints. 
+    # We'll do a batch insert and handle conflicts if possible, or simple batch update.
+    # To keep it safe and fast, we'll use a RPC or a list of dicts for upsert if the table has a unique constraint.
+    
+    upsert_data = []
+    for s in students:
+        upsert_data.append({
+            "student_id": s["id"],
+            "term": term,
+            "balance": payload.amount,
+            "cleared": payload.amount <= 0
+        })
 
-    return {"message": f"Term fee set to KES {payload.amount:,.2f} for {len(students)} students", "amount": payload.amount}
+    # Assuming student_id + term is UNIQUE in fee_balances
+    db.table("fee_balances").upsert(upsert_data, on_conflict="student_id,term").execute()
+
+    return {"message": f"Term fee set to KES {payload.amount:,.2f} for {len(students)} students", "count": len(students)}
+
+
+@router.get("/defaulters")
+async def get_defaulters(
+    school_id: str = Query(...),
+    current_term: str = Query(...),
+    previous_term: Optional[str] = Query(None)
+):
+    db = get_supabase()
+    
+    # Get all students in school
+    students = db.table("students").select("id, name, admission_number, class_id, classes(name)").eq("school_id", school_id).execute().data or []
+    student_map = {s["id"]: s for s in students}
+    student_ids = list(student_map.keys())
+
+    if not student_ids:
+        return {"current_term": [], "previous_term": []}
+
+    # Fetch balances for current term
+    current_balances = db.table("fee_balances").select("*").in_("student_id", student_ids).eq("term", current_term).gt("balance", 0).execute().data or []
+    
+    # Fetch balances for previous term
+    prev_balances = []
+    if previous_term:
+        prev_balances = db.table("fee_balances").select("*").in_("student_id", student_ids).eq("term", previous_term).gt("balance", 0).execute().data or []
+
+    def format_list(balances):
+        res = []
+        for b in balances:
+            s = student_map.get(b["student_id"])
+            if s:
+                res.append({
+                    "student_name": s["name"],
+                    "admission_number": s["admission_number"],
+                    "class_name": s["classes"]["name"] if s.get("classes") else "Unknown",
+                    "balance": b["balance"]
+                })
+        return res
+
+    return {
+        "current_term": format_list(current_balances),
+        "previous_term": format_list(prev_balances)
+    }
 
 @router.get("/term-fee")
 async def get_term_fee(school_id: str = Query(...), term: str = Query(...)):

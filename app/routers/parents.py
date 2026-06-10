@@ -185,7 +185,7 @@ async def download_student_report(
         raise HTTPException(status_code=404, detail="Student not found")
 
     try:
-        pdf_bytes = generate_student_report_pdf(student_id, term)
+        pdf_bytes = await generate_student_report_pdf(student_id, term)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return StreamingResponse(

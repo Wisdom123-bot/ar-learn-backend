@@ -53,14 +53,19 @@ async def import_backup(school_id: str, file: UploadFile = File(...)):
         rows = backup[table]
         if not rows:
             continue
-        # Remove id to let DB generate new ones, and set school_id if needed
+        # Set school_id if needed, but KEEP id to maintain foreign key relationships
         for row in rows:
-            row.pop("id", None)
             row.pop("created_at", None)
             row.pop("updated_at", None)
             if table not in ("subjects", "admins", "competencies"):
                 row["school_id"] = school_id
         try:
+            # Use upsert to handle existing IDs gracefully or direct insert if preferred
+            # Given it's a restore, insert with IDs is better. 
+            # If IDs exist, we might need to delete existing data for that school first to avoid conflicts.
+            if table not in ("subjects", "admins", "competencies"):
+                db.table(table).delete().eq("school_id", school_id).execute()
+
             result = db.table(table).insert(rows).execute()
             imported[table] = len(result.data) if result.data else 0
         except Exception as e:

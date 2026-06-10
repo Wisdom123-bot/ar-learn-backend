@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from app.core.database import get_supabase
 from collections import defaultdict
+from app.services.ai_summary_service import generate_student_summary
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -156,6 +157,23 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
     )
     class_remark = remarks.data[0]["remark"] if remarks.data else ""
 
+    # 7. Identify Weaknesses (Scores < 50%)
+    weaknesses = [r["subject"] for r in results_summary if r["average"] < 50]
+
+    # 8. Fetch Badges
+    badges_result = db.table("student_badges")\
+        .select("id, term, badges(name, icon_url, description), teachers(name)")\
+        .eq("student_id", student_id)\
+        .execute()
+    badges = []
+    for b in (badges_result.data or []):
+        badges.append({
+            "id": b["id"],
+            "term": b["term"],
+            "badge": b["badges"],
+            "awarded_by_name": b["teachers"]["name"] if b.get("teachers") else "System",
+        })
+
     return {
         "student": {
             "id": s["id"],
@@ -179,4 +197,14 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
             "payments": payments,
         },
         "class_teacher_remark": class_remark,
+        "weaknesses": weaknesses,
+        "badges": badges,
     }
+
+@router.get("/{student_id}/ai-summary")
+async def get_student_ai_summary(student_id: str, term: str = Query("Term 1 2025")):
+    try:
+        summary = await generate_student_summary(student_id, term)
+        return {"summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

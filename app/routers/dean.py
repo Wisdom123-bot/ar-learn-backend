@@ -14,26 +14,49 @@ async def dean_dashboard(
     db = get_supabase()
 
     # 1. School-wide attendance summary
-    students = db.table("students").select("id").eq("school_id", school_id).execute().data
+    students = db.table("students").select("id, name, admission_number, class_id, classes(name)").eq("school_id", school_id).execute().data
     student_ids = [s["id"] for s in students] if students else []
+    student_map = {s["id"]: s for s in students}
 
     attendance_summary = {"present": 0, "absent": 0, "sick": 0, "suspended": 0}
+    attendance_details = defaultdict(list)
     if student_ids:
-        att_records = db.table("attendance").select("status").in_("student_id", student_ids).execute().data or []
+        att_records = db.table("attendance").select("student_id, status, date").in_("student_id", student_ids).execute().data or []
         for a in att_records:
             key = a["status"].lower()
             if key in attendance_summary:
                 attendance_summary[key] += 1
+                s = student_map.get(a["student_id"])
+                if s:
+                    attendance_details[key].append({
+                        "student_id": s["id"],
+                        "student_name": s["name"],
+                        "admission_number": s["admission_number"],
+                        "class_name": s["classes"]["name"] if s.get("classes") else "N/A",
+                        "status": a["status"],
+                        "date": a["date"]
+                    })
 
     # 2. School-wide discipline summary
     discipline_summary = {"Minor": 0, "Major": 0, "Positive": 0}
+    discipline_details = defaultdict(list)
     classes = db.table("classes").select("id, name").eq("school_id", school_id).execute().data or []
     if classes:
         class_ids = [c["id"] for c in classes]
-        disc_records = db.table("discipline_records").select("category").in_("class_id", class_ids).execute().data or []
+        disc_records = db.table("discipline_records").select("*, students(name, admission_number), classes(name)").in_("class_id", class_ids).execute().data or []
         for d in disc_records:
-            if d["category"] in discipline_summary:
-                discipline_summary[d["category"]] += 1
+            cat = d["category"]
+            if cat in discipline_summary:
+                discipline_summary[cat] += 1
+                discipline_details[cat].append({
+                    "student_name": d["students"]["name"] if d.get("students") else "Unknown",
+                    "admission_number": d["students"]["admission_number"] if d.get("students") else "N/A",
+                    "class_name": d["classes"]["name"] if d.get("classes") else "N/A",
+                    "category": cat,
+                    "description": d["description"],
+                    "incident_date": d["incident_date"],
+                    "action_taken": d.get("action_taken", "")
+                })
 
     # 3. Attendance concerns per class (classes with < 75% attendance rate)
     attendance_concerns = []
@@ -79,7 +102,9 @@ async def dean_dashboard(
 
     return {
         "attendance_summary": attendance_summary,
+        "attendance_details": dict(attendance_details),
         "discipline_summary": discipline_summary,
+        "discipline_details": dict(discipline_details),
         "attendance_concerns": attendance_concerns,
         "most_disciplined_classes": most_disciplined,
         "risk_student_count": risk_count,

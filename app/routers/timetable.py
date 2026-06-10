@@ -16,8 +16,9 @@ async def create_timetable(payload: BulkTimetableRequest):
         raise HTTPException(status_code=404, detail="School not found")
 
     inserted = 0
+    entries_to_insert = []
     for entry in payload.entries:
-        data = {
+        entries_to_insert.append({
             "school_id": str(payload.school_id),
             "class_id": str(entry.class_id),
             "subject_id": str(entry.subject_id),
@@ -25,13 +26,14 @@ async def create_timetable(payload: BulkTimetableRequest):
             "day_of_week": entry.day_of_week,
             "start_time": entry.start_time,
             "end_time": entry.end_time,
-        }
+        })
+
+    if entries_to_insert:
         try:
-            db.table("timetable_entries").insert(data).execute()
-            inserted += 1
+            result = db.table("timetable_entries").insert(entries_to_insert).execute()
+            inserted = len(result.data) if result.data else 0
         except Exception as e:
-            # Could be duplicate day+time for same class, skip
-            continue
+            raise HTTPException(status_code=500, detail=f"Failed to insert timetable entries: {str(e)}")
 
     return {"message": f"{inserted} timetable entries created", "count": inserted}
 

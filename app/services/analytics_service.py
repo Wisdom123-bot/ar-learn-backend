@@ -72,6 +72,45 @@ def get_school_overview(school_id: str):
     return data
 
 
+def get_class_subject_performance(school_id: str, term: str):
+    """Fetch average scores per subject for each class in a specific term."""
+    db = get_supabase()
+    # 1. Get all students of school
+    students = db.table("students").select("id").eq("school_id", school_id).execute().data
+    if not students:
+        return {}
+
+    student_ids = [s["id"] for s in students]
+
+    # 2. Fetch results for these students in the specific term
+    results = (
+        db.table("results")
+        .select("score, subject_id, class_id")
+        .in_("student_id", student_ids)
+        .eq("term", term)
+        .execute()
+        .data or []
+    )
+
+    # 3. Aggregate scores by class and subject
+    # { class_id: { subject_id: [scores] } }
+    performance = {}
+    for r in results:
+        cid = r["class_id"]
+        sid = r["subject_id"]
+        performance.setdefault(cid, {}).setdefault(sid, []).append(r["score"])
+
+    # 4. Compute means
+    class_subject_means = {}
+    for cid, subjects in performance.items():
+        class_subject_means[cid] = {}
+        for sid, scores in subjects.items():
+            mean = sum(scores) / len(scores)
+            class_subject_means[cid][sid] = round(mean, 2)
+
+    return class_subject_means
+
+
 def get_class_analytics(class_id: str):
     """Detailed analytics for a single class."""
     cache_key = f"class_analytics:{class_id}"

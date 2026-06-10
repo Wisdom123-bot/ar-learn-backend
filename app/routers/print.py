@@ -34,6 +34,12 @@ async def print_report(
     show_fee_status = True
     show_teacher_remarks = True
     show_overall_evaluation = True
+    
+    # Check if school is premium for custom logo/styling
+    school_info = db.table("schools").select("is_premium, logo_url").eq("id", school_id).single().execute().data
+    is_premium = school_info.get("is_premium", False) if school_info else False
+    if is_premium and school_info.get("logo_url"):
+        logo_url = school_info["logo_url"]
 
     if template_id:
         template = db.table("report_templates").select("*").eq("id", template_id).eq("school_id", school_id).single().execute()
@@ -41,21 +47,42 @@ async def print_report(
             t = template.data
             primary_color = t.get("primary_color", "#1e3a8a")
             secondary_color = t.get("secondary_color", "#f0f4ff")
-            logo_url = t.get("logo_url", "")
+            # Only use template logo if premium, otherwise fallback to school logo or none
+            if is_premium:
+                logo_url = t.get("logo_url", "") or logo_url
+            
             show_attendance = t.get("show_attendance", True)
             show_fee_status = t.get("show_fee_status", True)
             show_teacher_remarks = t.get("show_teacher_remarks", True)
             show_overall_evaluation = t.get("show_overall_evaluation", True)
 
     # Results
-    results = db.table("results").select("*, subjects(name)").eq("student_id", student_id).eq("term", term).eq("approval_status", "approved").execute().data or []
+    results = db.table("results").select("*, subjects(name), teachers(name)").eq("student_id", student_id).eq("term", term).eq("approval_status", "approved").execute().data or []
     total = sum(r["score"] for r in results)
     mean = round(total / len(results), 2) if results else 0
 
     subject_rows = ""
     for r in results:
         subj = r["subjects"]["name"] if r.get("subjects") else "Unknown"
-        subject_rows += f"<tr><td>{subj}</td><td style='text-align:center'>{r['score']}</td></tr>"
+        teacher_name = r["teachers"]["name"] if r.get("teachers") else "N/A"
+        
+        # Professional remark for each subject if enabled
+        subj_remark = ""
+        if show_teacher_remarks:
+             # Use the actual teacher remark if it exists, otherwise use rule-based generation
+             raw_remark = r.get("remarks", "")
+             subj_remark = f"<div style='font-size: 0.75em; color: #666; margin-top: 4px; font-style: italic;'>{generate_professional_remark(s['name'], subj, r['score'], teacher_remark=raw_remark)}</div>"
+        
+        subject_rows += f"""
+            <tr>
+                <td>
+                    <div style='font-weight: bold;'>{subj}</div>
+                    <div style='font-size: 0.7em; color: #999;'>Teacher: {teacher_name}</div>
+                    {subj_remark}
+                </td>
+                <td style='text-align:center; font-weight: bold;'>{r['score']}%</td>
+            </tr>
+        """
 
     # Attendance (conditionally)
     attendance_html = ""
@@ -83,14 +110,26 @@ async def print_report(
             <p>Balance: KES {balance:,.2f} <span class="badge {'cleared' if cleared else 'not-cleared'}">{'Cleared' if cleared else 'Not Cleared'}</span></p>
         </div>"""
 
-    # AI overall remark (conditionally)
+    # AI overall evaluation / Executive Summary (conditionally)
     evaluation_html = ""
     if show_overall_evaluation:
-        ai_remark = generate_professional_remark(s["name"], "overall performance", mean)
+        # Instead of just rule-based, we'll try to generate a proper AI summary if possible
+        # For performance, we'll use a wrapper that might call our AI service
+        try:
+            from app.services.ai_summary_service import generate_student_summary
+            import asyncio
+            
+            # Using loop.run_until_complete is risky in FastAPI but let's assume we can get it
+            # Actually, since this is a sync endpoint (async def but HTMLResponse), we can use await
+            ai_remark = await generate_student_summary(student_id, term)
+        except Exception:
+            # Fallback to rule-based if AI fails
+            ai_remark = generate_professional_remark(s["name"], "overall performance", mean)
+            
         evaluation_html = f"""
         <div class="section">
-            <h3>Overall Evaluation</h3>
-            <p>{ai_remark}</p>
+            <h3>Executive Summary & Evaluation</h3>
+            <p style="line-height: 1.6; color: #444;">{ai_remark}</p>
         </div>"""
 
         # Teacher remarks (conditionally)

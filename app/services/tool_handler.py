@@ -178,5 +178,23 @@ def execute_tool(tool_name: str, parameters: dict, context: dict) -> dict:
             })
         return {"teachers": clean}
 
+    elif tool_name == "search_students":
+        query = parameters.get("query", "")
+        if not query:
+            return {"students": []}
+        
+        # Search by admission number or name
+        res = db.table("students").select("id, name, admission_number, class_id").eq("school_id", school_id).or_(f"admission_number.eq.{query},name.ilike.%{query}%").limit(10).execute()
+        
+        students = []
+        for s in res.data or []:
+            students.append({
+                "id": s["id"],
+                "name": s["name"],
+                "admission_number": s["admission_number"],
+                "class_name": class_name(s["class_id"])
+            })
+        return {"students": students}
+
     else:
         return {"error": f"Unknown tool: {tool_name}"}

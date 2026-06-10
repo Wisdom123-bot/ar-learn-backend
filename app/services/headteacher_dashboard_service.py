@@ -32,8 +32,12 @@ def get_headteacher_dashboard(school_id: str, term: str, previous_term: str = No
             if avg < 50:
                 risk_count += 1
                 if len(risk_sample) < 5:
-                    s = db.table("students").select("name").eq("id", sid).single().execute()
-                    risk_sample.append({"student_name": s.data["name"] if s.data else sid, "mean_score": round(avg, 2)})
+                    s = db.table("students").select("id, name").eq("id", sid).single().execute()
+                    risk_sample.append({
+                        "student_id": s.data["id"] if s.data else sid,
+                        "student_name": s.data["name"] if s.data else sid, 
+                        "mean_score": round(avg, 2)
+                    })
 
     attendance_summary = {"present": 0, "absent": 0, "sick": 0, "suspended": 0}
     if student_ids:
@@ -46,6 +50,12 @@ def get_headteacher_dashboard(school_id: str, term: str, previous_term: str = No
     fee_balances = db.table("fee_balances").select("balance, cleared").in_("student_id", student_ids).eq("term", term).execute().data or []
     total_outstanding = sum(f["balance"] for f in fee_balances)
     total_cleared = sum(1 for f in fee_balances if f["cleared"])
+
+    # Uncleared fees breakdown
+    previous_term_outstanding = 0
+    if previous_term:
+        prev_balances = db.table("fee_balances").select("balance").in_("student_id", student_ids).eq("term", previous_term).gt("balance", 0).execute().data or []
+        previous_term_outstanding = sum(b["balance"] for b in prev_balances)
 
     # CBC weakness summary (safe – skip if table doesn't exist)
     cbc_summary = []
@@ -76,6 +86,7 @@ def get_headteacher_dashboard(school_id: str, term: str, previous_term: str = No
         "attendance_summary": attendance_summary,
         "fee_outstanding": round(total_outstanding, 2),
         "fee_cleared_count": total_cleared,
+        "fee_previous_term_outstanding": round(previous_term_outstanding, 2),
         "cbc_weakest_competencies": cbc_summary,
     }
     set_cache(cache_key, data, ttl=300)

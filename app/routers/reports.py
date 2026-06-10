@@ -17,7 +17,7 @@ async def get_student_report(
     template_id: Optional[str] = Query(None),
 ):
     try:
-        pdf_bytes = generate_student_report_pdf(student_id, term, template_id)
+        pdf_bytes = await generate_student_report_pdf(student_id, term, template_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return StreamingResponse(
@@ -47,7 +47,7 @@ async def get_class_reports(
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for student in students:
             try:
-                pdf_bytes = generate_student_report_pdf(student["id"], term, template_id)
+                pdf_bytes = await generate_student_report_pdf(student["id"], term, template_id)
                 filename = f"{student['name'].replace(' ', '_')}_{student['id'][:8]}.pdf"
                 zf.writestr(filename, pdf_bytes)
             except Exception as e:
@@ -82,7 +82,7 @@ async def get_school_reports(
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for student in students:
             try:
-                pdf_bytes = generate_student_report_pdf(student["id"], term, template_id)
+                pdf_bytes = await generate_student_report_pdf(student["id"], term, template_id)
                 filename = f"{student['name'].replace(' ', '_')}_{student['id'][:8]}.pdf"
                 zf.writestr(filename, pdf_bytes)
             except Exception as e:

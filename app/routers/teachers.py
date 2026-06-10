@@ -28,14 +28,18 @@ async def assign_teacher(teacher_id: str, payload: TeacherAssignRequest):
 
     db.table("teacher_class_subjects").delete().eq("teacher_id", teacher_id).execute()
 
-    for assignment in payload.assignments:
-        data = {
+    # Batch insert assignments
+    insert_data = [
+        {
             "teacher_id": teacher_id,
             "class_id": str(assignment.class_id),
             "subject_id": str(assignment.subject_id),
             "is_class_teacher": assignment.is_class_teacher,
         }
-        db.table("teacher_class_subjects").insert(data).execute()
+        for assignment in payload.assignments
+    ]
+    if insert_data:
+        db.table("teacher_class_subjects").insert(insert_data).execute()
 
     return {"message": f"Teacher assigned to {len(payload.assignments)} class-subject entries"}
 @router.get("/{teacher_id}/profile")

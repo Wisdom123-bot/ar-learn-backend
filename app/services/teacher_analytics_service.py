@@ -56,18 +56,22 @@ def compute_teacher_value_add(
 
         # Subject-specific school mean for the subjects this teacher taught
         subjects_taught = list(set(r["subject_id"] for r in current_res))
+        
+        # We calculate the school-wide mean for these EXACT subjects
+        # This gives a fair benchmark: how did students do in these subjects vs this teacher's students
         school_subject_scores = []
-        for subj_id in subjects_taught:
+        if subjects_taught:
             subj_results = (
                 db.table("results")
-                .select("score")
-                .eq("subject_id", subj_id)
+                .select("score, subject_id")
+                .in_("subject_id", subjects_taught)
                 .eq("term", term)
                 .in_("student_id", school_student_ids)
                 .execute()
                 .data or []
             )
-            school_subject_scores.extend(r["score"] for r in subj_results)
+            school_subject_scores = [r["score"] for r in subj_results]
+
         school_subject_mean = sum(school_subject_scores) / len(school_subject_scores) if school_subject_scores else None
 
         # Previous term mean (if provided)
@@ -112,7 +116,8 @@ def compute_teacher_value_add(
         })
 
     # Sort by value_add descending (best teachers first)
-    teacher_results.sort(key=lambda x: x["value_add"] if x["value_add"] is not None else -999, reverse=True)
+    # Ensure teachers with None value_add are at the bottom but not breaking sort
+    teacher_results.sort(key=lambda x: (x["value_add"] is not None, x["value_add"] if x["value_add"] is not None else -999), reverse=True)
 
     set_cache(cache_key, teacher_results, ttl=600)  # cache 10 min
     return teacher_results

@@ -23,6 +23,8 @@ from app.routers import backup
 from app.routers import classes
 from app.routers import timetable_auto
 from app.routers import admissions
+from app.routers import badges
+from app.routers import messages
 
 app = FastAPI(
     title="Ar-Learn API",
@@ -72,6 +74,8 @@ app.include_router(backup.router)
 app.include_router(classes.router)
 app.include_router(timetable_auto.router)
 app.include_router(admissions.router)
+app.include_router(badges.router)
+app.include_router(messages.router)
 
 
 @app.get("/")

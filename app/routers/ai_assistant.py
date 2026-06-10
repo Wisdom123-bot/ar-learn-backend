@@ -66,25 +66,34 @@ TOOLS = [
             "term": {"type": "string", "description": "Current term, e.g. 'Term 1 2025'"},
             "previous_term": {"type": "string", "description": "Previous term for comparison, e.g. 'Term 3 2024'"}
         }
+    },
+    {
+        "name": "search_students",
+        "description": "Search for students by name or admission number to get their IDs and basic info.",
+        "parameters": {
+            "query": {"type": "string", "description": "Name or admission number"}
+        }
     }
 ]
 
-# Relaxed system prompt – allows natural answers or tool calls
+# Improved system prompt – encourages reasoning and explicit tool use
 SYSTEM_PROMPT = (
-    "You are Ar‑Learn, a helpful assistant for a Kenyan school. "
-    "You can answer general questions about the school using natural language, "
-    "or you can fetch specific data using the provided tools. "
-    "If the user asks for information that requires data (like 'best student', 'top class', 'who failed', 'how many paid fees', etc.), "
-    "reply ONLY with a JSON object like {\"tool\": \"<tool_name>\", \"parameters\": { ... }}. "
-    "For all other questions (e.g., 'hello', 'how are you', 'what is chemistry'), answer in plain English. "
-    "You MUST NOT include any extra text when returning JSON. "
-    "Never ask for credentials or sensitive codes."
+    "You are Ar‑Learn, an advanced AI assistant for a Kenyan school management system. "
+    "Your goal is to provide accurate, data-driven insights using the tools provided. "
+    "\n\nGUIDELINES:"
+    "\n1. If the request requires specific school data (stats, student profiles, fees, attendance, rankings), "
+    "YOU MUST use a tool. Reply ONLY with the JSON tool call: {\"tool\": \"tool_name\", \"parameters\": {...}}."
+    "\n2. If the user asks a general question about school, education, or the platform, answer directly."
+    "\n3. If you need a Class ID or Subject ID to answer a specific question but don't have it, "
+    "answer what you can with school-wide data or list available options if you know them."
+    "\n4. Output ONLY the JSON object when calling a tool. No preamble or markdown fences."
 )
 
 GUEST_SYSTEM_PROMPT = (
-    "You are Ar‑Learn, a school management platform assistant. "
-    "The user is NOT logged in. Answer only general questions about the platform. "
-    "If the user asks for school data, politely tell them to log in."
+    "You are Ar‑Learn AI. The user is NOT logged in. "
+    "Explain that Ar-Learn is a school management platform that provides: "
+    "Performance analytics, Automated Timetables, CBC Assessments, and Fee tracking. "
+    "Politely ask them to log in for specific school data."
 )
 
 
@@ -162,6 +171,15 @@ def format_tool_result(tool_name: str, data: dict) -> str:
             lines.append(f"• {t['teacher_name']} – Mean: {t['current_mean']}%, Value‑Add: {t.get('value_add', 'N/A')}")
         return "\n".join(lines)
 
+    if tool_name == "search_students":
+        students = data.get("students", [])
+        if not students:
+            return "No students found matching your query."
+        lines = ["🔍 Found students:"]
+        for s in students:
+            lines.append(f"• {s['name']} ({s['admission_number']}) in {s['class_name']}")
+        return "\n".join(lines)
+
     return json.dumps(data, indent=2)
 
 
@@ -183,6 +201,25 @@ def fallback_tool_call(question: str) -> Optional[dict]:
     return None
 
 
+def extract_json(text: str) -> Optional[dict]:
+    """Robustly extract JSON from potentially messy LLM output."""
+    text = text.strip()
+    # Remove markdown code fences if present
+    text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"```$", "", text)
+    
+    # Try to find the first '{' and last '}'
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1:
+        json_str = text[start : end + 1]
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
 @router.post("/ask", response_model=AIQueryResponse)
 async def ask_assistant(
     payload: AIQueryRequest,
@@ -191,25 +228,17 @@ async def ask_assistant(
 ):
     db = get_supabase()
 
-    # ----- Guest mode (no token) -----
+    # ----- Guest mode -----
     if teacher is None:
         llm_response = await ask_llm(payload.question, system=GUEST_SYSTEM_PROMPT)
-        if llm_response:
-            return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
         return AIQueryResponse(
-            answer="Ar‑Learn is a school management and analytics platform for Kenyan schools. "
-                   "It helps with results, CBC assessments, attendance, fees, and more. "
-                   "Log in to ask specific questions about your school!",
-            related_data={"source": "fallback"}
+            answer=llm_response or "Log in to access your school's data and analytics!",
+            related_data={"source": "llm"}
         )
 
     # ----- Authenticated mode -----
     if teacher["school_id"] != payload.school_id:
-        raise HTTPException(status_code=403, detail="Access denied: wrong school")
-
-    school = db.table("schools").select("id").eq("id", payload.school_id).execute()
-    if not school.data:
-        raise HTTPException(status_code=404, detail="School not found")
+        raise HTTPException(status_code=403, detail="Access denied")
 
     context = {
         "school_id": payload.school_id,
@@ -217,39 +246,34 @@ async def ask_assistant(
         "teacher_id": teacher["id"],
     }
 
-    # 1. Ask the LLM (Llama → Gemini → Groq)
+    # 1. Ask the LLM
     full_prompt = (
+        f"Context: School ID {payload.school_id}, User Role: {teacher['role']}\n"
         f"Available tools: {json.dumps(TOOLS)}\n\n"
-        f"User question: \"{payload.question}\"\n\n"
-        "Reply with a JSON tool call or a natural language answer."
+        f"Question: \"{payload.question}\""
     )
 
     llm_response = await ask_llm(full_prompt, system=SYSTEM_PROMPT)
 
-    # 2. Try to extract a JSON tool call from the response
     if llm_response:
-        clean = llm_response.strip()
-        # Remove possible markdown code fences
-        if clean.startswith("```json"):
-            clean = clean[7:]
-        if clean.endswith("```"):
-            clean = clean[:-3]
-        try:
-            tool_call = json.loads(clean)
-            if "tool" in tool_call and "parameters" in tool_call:
-                result = execute_tool(tool_call["tool"], tool_call["parameters"], context)
+        # 2. Extract tool call
+        tool_call = extract_json(llm_response)
+        if tool_call and "tool" in tool_call:
+            try:
+                result = execute_tool(tool_call["tool"], tool_call.get("parameters", {}), context)
                 return AIQueryResponse(
                     answer=format_tool_result(tool_call["tool"], result),
                     related_data={"source": "tool", "tool_used": tool_call["tool"]}
                 )
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass
+            except Exception as e:
+                # If tool fails, fallback to natural language from LLM if available
+                pass
 
-    # 3. If the LLM returned a plain English answer, use it
-    if llm_response and len(llm_response) > 5 and not llm_response.startswith("{"):
-        return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
+        # 3. If no tool call or tool failed, use the LLM's natural response
+        if not llm_response.strip().startswith("{"):
+            return AIQueryResponse(answer=llm_response.strip(), related_data={"source": "llm"})
 
-    # 4. Last resort: keyword‑based fallback (still secure, read‑only)
+    # 4. Fallback to keyword matching if LLM is unhelpful
     fb = fallback_tool_call(payload.question)
     if fb:
         result = execute_tool(fb["tool"], fb["parameters"], context)
@@ -258,6 +282,6 @@ async def ask_assistant(
             related_data={"source": "keyword"}
         )
 
-    # 5. Ultimate fallback: rule‑based assistant
+    # 5. Ultimate fallback
     fallback = answer_question(payload.school_id, payload.question)
     return AIQueryResponse(answer=fallback["answer"], related_data=fallback["related_data"])
