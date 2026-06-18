@@ -5,7 +5,7 @@ from typing import List, Optional
 from app.core.database import get_supabase
 from pydantic import BaseModel
 from app.services.notification_service import create_notification
-from app.schemas.fee import FeeBalanceCreate, FeePaymentCreate, FeeStatus
+from app.schemas.fee import FeeBalanceCreate, FeePaymentCreate, FeeStatus, TermFeeRequest
 
 router = APIRouter(prefix="/fees", tags=["fees"])
 
@@ -181,9 +181,6 @@ async def class_fee_status(class_id: str, term: str = Query(...)):
             pass
     return result
 
-
-class TermFeeRequest(BaseModel):
-    amount: float
 
 @router.post("/term-fee")
 async def set_term_fee(
