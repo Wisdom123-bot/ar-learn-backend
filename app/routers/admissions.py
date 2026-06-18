@@ -1,6 +1,9 @@
 import random
 import string
 from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel, Field
+from typing import Optional
+from app.core.database import get_supabase
 from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/admissions", tags=["admissions"])

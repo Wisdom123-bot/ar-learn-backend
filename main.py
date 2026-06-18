@@ -25,6 +25,7 @@ from app.routers import timetable_auto
 from app.routers import admissions
 from app.routers import badges
 from app.routers import messages
+from app.routers import public
 
 app = FastAPI(
     title="Ar-Learn API",
@@ -76,6 +77,7 @@ app.include_router(timetable_auto.router)
 app.include_router(admissions.router)
 app.include_router(badges.router)
 app.include_router(messages.router)
+app.include_router(public.router)
 
 
 @app.get("/")
