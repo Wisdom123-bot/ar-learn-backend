@@ -64,8 +64,9 @@ async def list_school_students(school_id: str):
 async def get_student_profile(student_id: str, term: str = Query("Term 1 2025")):
     db = get_supabase()
 
-    # Optimized single query to fetch almost everything
-    # Uses Supabase's ability to join tables in a single .select()
+    # Optimized query to fetch main student details and linked records
+    # Note: class_teacher_remarks is fetched separately to avoid PGRST108 errors
+    # if the database relationship isn't properly detected by PostgREST cache.
     query = (
         db.table("students")
         .select("""
@@ -77,7 +78,6 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
             discipline_records(*),
             fee_balances(*),
             fee_payments(*),
-            class_teacher_remarks(remark),
             student_badges(id, term, badges(name, icon_url, description), teachers(name))
         """)
         .eq("id", student_id)
@@ -85,7 +85,6 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
         .eq("results.approval_status", "approved")
         .eq("fee_balances.term", term)
         .eq("fee_payments.term", term)
-        .eq("class_teacher_remarks.term", term)
         .limit(1)
         .execute()
     )
@@ -94,6 +93,23 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
         raise HTTPException(status_code=404, detail="Student not found")
     
     s = query.data[0]
+
+    # Fetch class teacher remarks separately for robustness
+    class_teacher_remark = ""
+    try:
+        remark_query = (
+            db.table("class_teacher_remarks")
+            .select("remark")
+            .eq("student_id", student_id)
+            .eq("term", term)
+            .limit(1)
+            .execute()
+        )
+        if remark_query.data:
+            class_teacher_remark = remark_query.data[0]["remark"]
+    except Exception:
+        # Fallback if table doesn't exist or query fails
+        pass
     
     # Process results
     results_summary = []
@@ -150,7 +166,7 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
             "cleared": fee_data["cleared"],
             "payments": s.get("fee_payments") or [],
         },
-        "class_teacher_remark": s["class_teacher_remarks"][0]["remark"] if s.get("class_teacher_remarks") else "",
+        "class_teacher_remark": class_teacher_remark,
         "weaknesses": [r["subject"] for r in results_summary if r["average"] < 50],
         "badges": badges,
     }

@@ -67,6 +67,9 @@ async def refresh_token(payload: RefreshRequest):
     
     new_access_token = create_access_token(data={"sub": user_id, "role": role})
     return {"token": new_access_token}
+
+
+def get_client_ip(request: Request) -> str:
     """Extract real client IP from Render's x-forwarded-for header."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
