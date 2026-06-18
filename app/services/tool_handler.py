@@ -9,28 +9,13 @@ from typing import Optional
 
 def execute_tool(tool_name: str, parameters: dict, context: dict) -> dict:
     """
-    Execute a safe read‑only tool.
-    context must contain: school_id, role, teacher_id (optional)
+    Execute a safe read‑only tool with optimized batch queries.
     """
     db = get_supabase()
     school_id = context["school_id"]
     role = context.get("role", "teacher")
 
-    # ── Safe lookup helpers ──
-
-    def student_name(sid: str) -> str:
-        s = db.table("students").select("name").eq("id", sid).single().execute()
-        return s.data["name"] if s.data else sid
-
-    def subject_name(sid: str) -> str:
-        s = db.table("subjects").select("name").eq("id", sid).single().execute()
-        return s.data["name"] if s.data else sid
-
-    def class_name(cid: str) -> str:
-        c = db.table("classes").select("name").eq("id", cid).single().execute()
-        return c.data["name"] if c.data else cid
-
-    # ── Tool implementations ──
+    # ── Optimized Tool implementations ──
 
     if tool_name == "get_school_overview":
         from app.services.analytics_service import get_school_overview
@@ -40,28 +25,37 @@ def execute_tool(tool_name: str, parameters: dict, context: dict) -> dict:
         class_id = parameters.get("class_id")
         subject_id = parameters.get("subject_id")
         limit = min(int(parameters.get("limit", 5)), 20)
+        term = parameters.get("term", "Term 1 2025")
 
-        query = db.table("results").select("student_id, score").eq("term", parameters.get("term", "Term 1 2025"))
+        query = db.table("results").select("student_id, score").eq("term", term)
         if class_id:
             query = query.eq("class_id", class_id)
         if subject_id:
             query = query.eq("subject_id", subject_id)
         results = query.execute().data or []
 
-        # Average per student
+        # Aggregate scores
         scores = {}
         for r in results:
             scores.setdefault(r["student_id"], []).append(r["score"])
         avg = [(sid, sum(sc)/len(sc)) for sid, sc in scores.items()]
         avg.sort(key=lambda x: x[1], reverse=True)
 
+        top_ids = [sid for sid, _ in avg[:limit]]
+        if not top_ids:
+            return {"top_students": []}
+
+        # BATCH FETCH students and their class names in one query
+        students_res = db.table("students").select("id, name, classes(name)").in_("id", top_ids).eq("school_id", school_id).execute()
+        student_map = {s["id"]: s for s in (students_res.data or [])}
+
         top = []
         for sid, mean in avg[:limit]:
-            s = db.table("students").select("name, class_id").eq("id", sid).eq("school_id", school_id).single().execute()
-            if s.data:
+            if sid in student_map:
+                s = student_map[sid]
                 top.append({
-                    "student_name": s.data["name"],
-                    "class_name": class_name(s.data["class_id"]),
+                    "student_name": s["name"],
+                    "class_name": s["classes"]["name"] if s.get("classes") else "N/A",
                     "mean_score": round(mean, 2),
                 })
         return {"top_students": top}
@@ -72,7 +66,8 @@ def execute_tool(tool_name: str, parameters: dict, context: dict) -> dict:
         if not student_name and not admission:
             return {"error": "Provide student_name or admission_number"}
 
-        query = db.table("students").select("id, name, class_id, admission_number").eq("school_id", school_id)
+        # Optimized: Fetch student info and essential linked data in one shot
+        query = db.table("students").select("id, name, admission_number, classes(name)").eq("school_id", school_id)
         if admission:
             query = query.eq("admission_number", admission)
         else:
@@ -85,73 +80,81 @@ def execute_tool(tool_name: str, parameters: dict, context: dict) -> dict:
         sid = student.data["id"]
         term = parameters.get("term", "Term 1 2025")
 
-        # Results
-        results = db.table("results").select("subject_id, score").eq("student_id", sid).eq("term", term).execute().data or []
+        # BATCH FETCH profile details (results with subjects, attendance, and fees)
+        # We can use the nested logic similar to the router optimization
+        details = db.table("students").select("""
+            results(*, subjects(name)),
+            attendance(status),
+            fee_balances(*)
+        """).eq("id", sid).eq("results.term", term).eq("fee_balances.term", term).single().execute()
+
+        d = details.data or {}
+        
+        # Results processing
         subj_scores = {}
-        for r in results:
-            subj = subject_name(r["subject_id"])
+        for r in (d.get("results") or []):
+            subj = r["subjects"]["name"]
             subj_scores.setdefault(subj, []).append(r["score"])
         results_clean = {subj: round(sum(sc)/len(sc), 2) for subj, sc in subj_scores.items()}
 
-        # Attendance
-        attendance = db.table("attendance").select("status").eq("student_id", sid).execute().data or []
-        present = sum(1 for a in attendance if a["status"] == "Present")
-        total = len(attendance)
-        att_pct = round((present / total) * 100, 1) if total > 0 else 0
+        # Attendance processing
+        att_list = d.get("attendance") or []
+        present = sum(1 for a in att_list if a["status"].lower() == "present")
+        att_pct = round((present / len(att_list)) * 100, 1) if att_list else 0
 
         # Fees
-        fee = db.table("fee_balances").select("balance, cleared").eq("student_id", sid).eq("term", term).maybe_single().execute()
-        fee_balance = fee.data["balance"] if fee.data else 0
-        fee_cleared = fee.data["cleared"] if fee.data else False
+        fee = d.get("fee_balances")[0] if d.get("fee_balances") else {"balance": 0, "cleared": False}
 
         return {
             "name": student.data["name"],
             "admission_number": student.data["admission_number"],
-            "class": class_name(student.data["class_id"]),
+            "class": student.data["classes"]["name"] if student.data.get("classes") else "N/A",
             "results": results_clean,
             "attendance_pct": att_pct,
-            "fee_balance": fee_balance,
-            "fee_cleared": fee_cleared,
+            "fee_balance": fee["balance"],
+            "fee_cleared": fee["cleared"],
         }
 
     elif tool_name == "get_attendance_summary":
         class_id = parameters.get("class_id")
+        
+        # Optimized: Single aggregation query would be better, but Supabase client prefers simple filters.
+        # Still, we avoid fetching all student IDs first if we don't need to.
+        query = db.table("attendance").select("status, students!inner(school_id, class_id)")
+        query = query.eq("students.school_id", school_id)
         if class_id:
-            students = db.table("students").select("id").eq("class_id", class_id).eq("school_id", school_id).execute().data
-        else:
-            students = db.table("students").select("id").eq("school_id", school_id).execute().data
-        sids = [s["id"] for s in students] if students else []
-
-        records = db.table("attendance").select("status").in_("student_id", sids).execute().data or []
+            query = query.eq("students.class_id", class_id)
+        
+        records = query.execute().data or []
         summary = {"present": 0, "absent": 0, "sick": 0, "suspended": 0}
         for r in records:
             s = r["status"].lower()
             if s in summary:
                 summary[s] += 1
-        total = sum(summary.values())
+        total = len(records)
         pct = round((summary["present"] / total) * 100, 1) if total > 0 else 0
         return {"attendance_summary": summary, "attendance_pct": pct, "total_days": total}
 
-    elif tool_name == "get_fee_summary":
-        students = db.table("students").select("id").eq("school_id", school_id).execute().data
-        sids = [s["id"] for s in students] if students else []
-        if not sids:
-            return {"total_outstanding": 0, "cleared_count": 0}
-        balances = db.table("fee_balances").select("balance, cleared").in_("student_id", sids).eq("term", parameters.get("term", "Term 1 2025")).execute().data or []
-        outstanding = sum(b["balance"] for b in balances)
-        cleared = sum(1 for b in balances if b["cleared"])
-        return {"total_outstanding": outstanding, "cleared_count": cleared}
-
     elif tool_name == "get_class_ranking":
-        classes = db.table("classes").select("id, name").eq("school_id", school_id).execute().data or []
         term = parameters.get("term", "Term 1 2025")
+        # Optimized: Fetch results grouped by class in a more efficient way if possible,
+        # but let's stick to a clean two-step batch fetch to keep logic simple.
+        classes = db.table("classes").select("id, name").eq("school_id", school_id).execute().data or []
+        if not classes: return {"class_ranking": []}
+        
+        c_ids = [c["id"] for c in classes]
+        all_results = db.table("results").select("score, class_id").in_("class_id", c_ids).eq("term", term).execute().data or []
+        
+        class_scores = {}
+        for r in all_results:
+            class_scores.setdefault(r["class_id"], []).append(r["score"])
+            
         ranking = []
         for c in classes:
-            students = db.table("students").select("id").eq("class_id", c["id"]).execute().data
-            cids = [s["id"] for s in students]
-            results = db.table("results").select("score").in_("student_id", cids).eq("term", term).execute().data or []
-            mean = round(sum(r["score"] for r in results) / len(results), 2) if results else 0
+            scores = class_scores.get(c["id"], [])
+            mean = round(sum(scores) / len(scores), 2) if scores else 0
             ranking.append({"class_name": c["name"], "mean_score": mean})
+
         ranking.sort(key=lambda x: x["mean_score"], reverse=True)
         for i, r in enumerate(ranking):
             r["rank"] = i + 1

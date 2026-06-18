@@ -54,19 +54,7 @@ def unban_ip(ip: str):
 
 def list_banned_ips():
     db = get_supabase()
-    # Fetch ALL login_attempts rows and filter in Python
-    # avoids supabase-py filter syntax issues with NULL checks
-    result = db.table("login_attempts").select("*").execute()
     now = datetime.now(timezone.utc)
-    banned = []
-    for row in (result.data or []):
-        banned_until_str = row.get("banned_until")
-        if not banned_until_str:
-            continue
-        try:
-            banned_until = datetime.fromisoformat(banned_until_str)
-            if banned_until > now:
-                banned.append(row)
-        except (ValueError, TypeError):
-            continue
-    return banned
+    # Use Supabase/PostgREST filtering to only get currently banned IPs
+    result = db.table("login_attempts").select("*").gt("banned_until", now.isoformat()).execute()
+    return result.data or []

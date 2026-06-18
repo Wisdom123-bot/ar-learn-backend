@@ -2,6 +2,7 @@ import httpx
 import os
 import json
 import asyncio
+from typing import AsyncGenerator
 
 # Reduced Timeouts for snappiness (seconds)
 TIMEOUT_LLAMA   = 10
@@ -18,10 +19,13 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 
 
-async def ask_llm(prompt: str, system: str = "") -> str:
+async def ask_llm(prompt: str, system: str = "", stream: bool = False):
     """
-    Poll multiple LLM providers in parallel and return the fastest successful response.
+    Poll multiple LLM providers. If stream is True, returns an AsyncGenerator.
     """
+    if stream:
+        return _stream_groq(prompt, system)
+
     tasks = [
         _call_llama(prompt, system),
         _call_gemini(prompt, system),
@@ -38,8 +42,45 @@ async def ask_llm(prompt: str, system: str = "") -> str:
 
     return ""
 
+async def _stream_groq(prompt: str, system: str) -> AsyncGenerator[str, None]:
+    if not GROQ_KEY:
+        yield "Error: Groq API key missing for streaming."
+        return
 
-# ---------- Individual providers ----------
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    
+    payload = {
+        "model": "llama3-70b-8192",
+        "messages": messages,
+        "temperature": 0.5,
+        "stream": True,
+    }
+    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream("POST", GROQ_URL, json=payload, headers=headers, timeout=20.0) as response:
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            delta = data["choices"][0]["delta"].get("content", "")
+                            if delta:
+                                yield delta
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+    except Exception as e:
+        yield f"\n[Streaming Error: {str(e)}]"
+
+# ---------- Individual providers (Non-streaming) ----------
 
 async def _call_llama(prompt: str, system: str) -> str:
     try:
@@ -60,13 +101,12 @@ async def _call_gemini(prompt: str, system: str) -> str:
     if not GEMINI_KEY:
         return ""
     try:
-        # Combine system + prompt into a single user message (Gemini doesn't support separate system in API)
         full_text = prompt
         if system:
             full_text = f"System: {system}\n\nUser: {prompt}"
         payload = {
             "contents": [{"parts": [{"text": full_text}]}],
-            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 256},
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 512},
         }
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -76,7 +116,6 @@ async def _call_gemini(prompt: str, system: str) -> str:
             )
             resp.raise_for_status()
             data = resp.json()
-            # Parse Gemini response
             candidates = data.get("candidates", [])
             if candidates and candidates[0].get("content", {}).get("parts"):
                 return candidates[0]["content"]["parts"][0].get("text", "")
@@ -97,7 +136,7 @@ async def _call_groq(prompt: str, system: str) -> str:
             "model": "llama3-8b-8192",
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 300,
+            "max_tokens": 512,
         }
         headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
         async with httpx.AsyncClient() as client:

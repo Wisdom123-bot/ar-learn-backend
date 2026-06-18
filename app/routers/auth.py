@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel
 from typing import Optional
 from app.core.database import get_supabase
+from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.services.rate_limit_service import is_ip_banned, record_failed_attempt, reset_attempts
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -13,6 +14,8 @@ class TeacherLoginRequest(BaseModel):
 
 
 class TeacherLoginResponse(BaseModel):
+    token: str
+    refresh_token: str
     teacher_id: str
     name: str
     teacher_code: str
@@ -37,6 +40,8 @@ class UnifiedLoginRequest(BaseModel):
 
 
 class UnifiedLoginResponse(BaseModel):
+    token: str
+    refresh_token: str
     teacher_id: str
     name: str
     teacher_code: str
@@ -48,7 +53,20 @@ class UnifiedLoginResponse(BaseModel):
     logo_url: Optional[str] = None
 
 
-def get_client_ip(request: Request) -> str:
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+@router.post("/refresh")
+async def refresh_token(payload: RefreshRequest):
+    decoded = decode_token(payload.refresh_token)
+    if not decoded or decoded.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    
+    user_id = decoded.get("sub")
+    role = decoded.get("role")
+    
+    new_access_token = create_access_token(data={"sub": user_id, "role": role})
+    return {"token": new_access_token}
     """Extract real client IP from Render's x-forwarded-for header."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
@@ -83,7 +101,14 @@ async def teacher_login(payload: TeacherLoginRequest, request: Request):
         raise HTTPException(status_code=403, detail="School account is suspended.")
 
     reset_attempts(ip)
+    
+    # Generate JWT tokens
+    access_token = create_access_token(data={"sub": teacher["id"], "role": teacher.get("role", "teacher")})
+    refresh_token = create_refresh_token(data={"sub": teacher["id"], "role": teacher.get("role", "teacher")})
+
     return TeacherLoginResponse(
+        token=access_token,
+        refresh_token=refresh_token,
         teacher_id=teacher["id"],
         name=teacher["name"],
         teacher_code=teacher["teacher_code"],
@@ -157,7 +182,13 @@ async def unified_login(payload: UnifiedLoginRequest, request: Request):
     teacher = result.data[0]
     reset_attempts(ip)
 
+    # Generate JWT tokens
+    access_token = create_access_token(data={"sub": teacher["id"], "role": teacher["role"]})
+    refresh_token = create_refresh_token(data={"sub": teacher["id"], "role": teacher["role"]})
+
     return UnifiedLoginResponse(
+        token=access_token,
+        refresh_token=refresh_token,
         teacher_id=teacher["id"],
         name=teacher["name"],
         teacher_code=teacher["teacher_code"],

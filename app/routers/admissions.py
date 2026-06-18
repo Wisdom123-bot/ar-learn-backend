@@ -1,24 +1,12 @@
 import random
 import string
 from fastapi import APIRouter, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
-from typing import Optional
-from app.core.database import get_supabase
+from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/admissions", tags=["admissions"])
 
-# Simple dependency to get the teacher from the Bearer token
-security = HTTPBearer()
-
-def get_current_teacher(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    db = get_supabase()
-    # We expect the token to be the teacher's UUID (stored in localStorage as teacher_id)
-    teacher_id = credentials.credentials
-    teacher = db.table("teachers").select("*").eq("id", teacher_id).single().execute()
-    if not teacher.data:
-        raise HTTPException(status_code=401, detail="Invalid teacher")
-    return teacher.data
+def get_current_teacher(teacher: dict = Depends(get_current_user)):
+    return teacher
 
 
 class StudentAdmitRequest(BaseModel):
