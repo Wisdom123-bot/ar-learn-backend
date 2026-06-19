@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 from app.core.database import get_supabase
+from app.core.security import decode_token
 from app.services.teacher_analytics_service import compute_teacher_value_add
 
 router = APIRouter(prefix="/analytics/teachers", tags=["teacher analytics"])
@@ -13,11 +14,23 @@ async def get_teacher_from_token(
 ) -> Optional[dict]:
     if credentials is None:
         return None
-    db = get_supabase()
-    teacher = db.table("teachers").select("*").eq("id", credentials.credentials).single().execute()
-    if not teacher.data:
+    
+    payload = decode_token(credentials.credentials)
+    if not payload or payload.get("type") != "access":
         return None
-    return teacher.data
+    
+    teacher_id = payload.get("sub")
+    if not teacher_id:
+        return None
+
+    db = get_supabase()
+    try:
+        teacher = db.table("teachers").select("*").eq("id", teacher_id).single().execute()
+        if not teacher.data:
+            return None
+        return teacher.data
+    except Exception:
+        return None
 
 
 @router.get("/")

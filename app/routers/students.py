@@ -65,7 +65,7 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
     db = get_supabase()
 
     # Optimized query to fetch main student details and linked records
-    # Note: class_teacher_remarks is fetched separately to avoid PGRST108 errors
+    # Note: class_teacher_remarks and fee_payments are fetched separately to avoid PGRST108 errors
     # if the database relationship isn't properly detected by PostgREST cache.
     query = (
         db.table("students")
@@ -77,14 +77,12 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
             attendance(status),
             discipline_records(*),
             fee_balances(*),
-            fee_payments(*),
             student_badges(id, term, badges(name, icon_url, description), teachers(name))
         """)
         .eq("id", student_id)
         .eq("results.term", term)
         .eq("results.approval_status", "approved")
         .eq("fee_balances.term", term)
-        .eq("fee_payments.term", term)
         .limit(1)
         .execute()
     )
@@ -93,6 +91,20 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
         raise HTTPException(status_code=404, detail="Student not found")
     
     s = query.data[0]
+
+    # Fetch fee payments separately for robustness
+    fee_payments = []
+    try:
+        payments_query = (
+            db.table("fee_payments")
+            .select("*")
+            .eq("student_id", student_id)
+            .eq("term", term)
+            .execute()
+        )
+        fee_payments = payments_query.data or []
+    except Exception:
+        pass
 
     # Fetch class teacher remarks separately for robustness
     class_teacher_remark = ""
@@ -164,7 +176,7 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
         "fee": {
             "balance": fee_data["balance"],
             "cleared": fee_data["cleared"],
-            "payments": s.get("fee_payments") or [],
+            "payments": fee_payments,
         },
         "class_teacher_remark": class_teacher_remark,
         "weaknesses": [r["subject"] for r in results_summary if r["average"] < 50],
