@@ -95,15 +95,25 @@ async def class_ranking(
     if not classes:
         return []
 
+    class_ids = [c["id"] for c in classes]
+    
+    # Fetch all results for these classes in one go
+    all_results = db.table("results").select("score, class_id").in_("class_id", class_ids).eq("term", term).execute().data or []
+    
+    class_scores = defaultdict(list)
+    for r in all_results:
+        class_scores[r["class_id"]].append(r["score"])
+
     class_means = []
     for cls in classes:
-        student_ids = [s["id"] for s in db.table("students").select("id").eq("class_id", cls["id"]).execute().data]
-        if not student_ids:
-            class_means.append(ClassRank(class_id=cls["id"], class_name=cls["name"], mean_score=0, rank=0))
-            continue
-        results = db.table("results").select("score").in_("student_id", student_ids).eq("term", term).execute().data or []
-        mean = sum(r["score"] for r in results) / len(results) if results else 0
-        class_means.append(ClassRank(class_id=cls["id"], class_name=cls["name"], mean_score=round(mean, 2), rank=0))
+        scores = class_scores.get(cls["id"], [])
+        mean = sum(scores) / len(scores) if scores else 0
+        class_means.append(ClassRank(
+            class_id=cls["id"],
+            class_name=cls["name"],
+            mean_score=round(mean, 2),
+            rank=0
+        ))
 
     # Sort by mean descending
     class_means.sort(key=lambda x: x.mean_score, reverse=True)
@@ -118,27 +128,30 @@ async def subject_ranking(
     term: str = Query(...),
 ):
     db = get_supabase()
-    subjects = db.table("subjects").select("id, name").eq("school_id", school_id).execute().data or []
-    if not subjects:
+    
+    # Get all classes for this school
+    classes = db.table("classes").select("id").eq("school_id", school_id).execute().data or []
+    class_ids = [c["id"] for c in classes]
+    if not class_ids:
         return []
 
-    # Get all students for this school
-    student_ids = [s["id"] for s in db.table("students").select("id").eq("school_id", school_id).execute().data]
-    if not student_ids:
+    # Fetch ALL results for the school in one go
+    all_results = db.table("results").select("score, subject_id").in_("class_id", class_ids).eq("term", term).execute().data or []
+    if not all_results:
         return []
+
+    subject_scores = defaultdict(list)
+    for r in all_results:
+        subject_scores[r["subject_id"]].append(r["score"])
+
+    # Fetch only the subjects that have results
+    used_subject_ids = list(subject_scores.keys())
+    subjects = db.table("subjects").select("id, name").in_("id", used_subject_ids).execute().data or []
 
     subject_means = []
     for subj in subjects:
-        results = (
-            db.table("results")
-            .select("score")
-            .in_("student_id", student_ids)
-            .eq("subject_id", subj["id"])
-            .eq("term", term)
-            .execute()
-            .data or []
-        )
-        mean = sum(r["score"] for r in results) / len(results) if results else 0
+        scores = subject_scores.get(subj["id"], [])
+        mean = sum(scores) / len(scores) if scores else 0
         subject_means.append(SubjectRank(
             subject_id=subj["id"],
             subject_name=subj["name"],

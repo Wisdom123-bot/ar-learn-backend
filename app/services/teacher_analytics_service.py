@@ -28,73 +28,71 @@ def compute_teacher_value_add(
     if not teachers:
         return []
 
-    # Get all student IDs of this school (for subject‑level school mean)
-    school_students = db.table("students").select("id").eq("school_id", school_id).execute().data or []
-    school_student_ids = [s["id"] for s in school_students]
+    # Get all classes for this school to fetch all results in one go
+    classes = db.table("classes").select("id").eq("school_id", school_id).execute().data or []
+    class_ids = [c["id"] for c in classes]
+    if not class_ids:
+        return []
+
+    # Fetch ALL results for the school for the relevant terms
+    terms_to_fetch = [term]
+    if previous_term:
+        terms_to_fetch.append(previous_term)
+    
+    all_results = db.table("results").select("score, subject_id, student_id, term, submitted_by").in_("class_id", class_ids).in_("term", terms_to_fetch).execute().data or []
+    
+    # Pre-process results into useful maps
+    teacher_current_results = defaultdict(list)
+    teacher_previous_results = defaultdict(list)
+    subject_school_scores = defaultdict(list)
+    
+    for r in all_results:
+        t_id = r["submitted_by"]
+        r_term = r["term"]
+        score = r["score"]
+        subj_id = r["subject_id"]
+        
+        if r_term == term:
+            teacher_current_results[t_id].append(r)
+            subject_school_scores[subj_id].append(score)
+        elif r_term == previous_term:
+            teacher_previous_results[t_id].append(r)
 
     teacher_results = []
 
     for teacher in teachers:
         tid = teacher["id"]
-
-        # Find all results submitted by this teacher for this term
-        current_res = (
-            db.table("results")
-            .select("score, subject_id, student_id")
-            .eq("submitted_by", tid)
-            .eq("term", term)
-            .execute()
-            .data or []
-        )
+        current_res = teacher_current_results.get(tid, [])
 
         if not current_res:
-            continue  # teacher with no results in this term
+            continue
 
         # Current mean
         current_scores = [r["score"] for r in current_res]
         current_mean = sum(current_scores) / len(current_scores)
 
-        # Subject-specific school mean for the subjects this teacher taught
+        # Subject-specific school mean
         subjects_taught = list(set(r["subject_id"] for r in current_res))
         
-        # We calculate the school-wide mean for these EXACT subjects
-        # This gives a fair benchmark: how did students do in these subjects vs this teacher's students
-        school_subject_scores = []
-        if subjects_taught:
-            subj_results = (
-                db.table("results")
-                .select("score, subject_id")
-                .in_("subject_id", subjects_taught)
-                .eq("term", term)
-                .in_("student_id", school_student_ids)
-                .execute()
-                .data or []
-            )
-            school_subject_scores = [r["score"] for r in subj_results]
+        bench_scores = []
+        for s_id in subjects_taught:
+            bench_scores.extend(subject_school_scores.get(s_id, []))
+            
+        school_subject_mean = sum(bench_scores) / len(bench_scores) if bench_scores else None
 
-        school_subject_mean = sum(school_subject_scores) / len(school_subject_scores) if school_subject_scores else None
-
-        # Previous term mean (if provided)
+        # Previous mean
         previous_mean = None
         change = None
-        if previous_term:
-            prev_res = (
-                db.table("results")
-                .select("score")
-                .eq("submitted_by", tid)
-                .eq("term", previous_term)
-                .execute()
-                .data or []
-            )
-            if prev_res:
-                prev_scores = [r["score"] for r in prev_res]
-                previous_mean = sum(prev_scores) / len(prev_scores)
-                change = current_mean - previous_mean
+        prev_res = teacher_previous_results.get(tid, [])
+        if prev_res:
+            prev_scores = [r["score"] for r in prev_res]
+            previous_mean = sum(prev_scores) / len(prev_scores)
+            change = current_mean - previous_mean
 
-        # Value-add: teacher mean minus school subject mean
+        # Value-add
         value_add = current_mean - school_subject_mean if school_subject_mean is not None else None
 
-        # Risk students: students with mean score < 50 in the teacher's subjects
+        # Risk students
         student_scores = defaultdict(list)
         for r in current_res:
             student_scores[r["student_id"]].append(r["score"])

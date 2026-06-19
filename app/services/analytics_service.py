@@ -12,22 +12,19 @@ def get_school_overview(school_id: str):
 
     db = get_supabase()
 
-    # Fetch all results for this school (via students)
-    results = (
-        db.table("results")
-        .select("score, subject_id, class_id, student_id, term")
-        .in_("student_id", db.table("students").select("id").eq("school_id", school_id).execute().data and [s["id"] for s in db.table("students").select("id").eq("school_id", school_id).execute().data] or [])
-        .execute()
-    )
-    # Easier: fetch all students of school, then results of those students
-    student_ids = [s["id"] for s in db.table("students").select("id").eq("school_id", school_id).execute().data]
-    if not student_ids:
+    # Fetch all classes for this school
+    classes_data = db.table("classes").select("id, name").eq("school_id", school_id).execute().data or []
+    if not classes_data:
         return {"school_mean": 0, "class_means": [], "subject_means": []}
+    
+    class_ids = [c["id"] for c in classes_data]
+    classes_names = {c["id"]: c["name"] for c in classes_data}
 
+    # Fetch all results for these classes
     results_query = (
         db.table("results")
         .select("score, subject_id, class_id, student_id, term")
-        .in_("student_id", student_ids)
+        .in_("class_id", class_ids)
         .execute()
     )
     rows = results_query.data or []
@@ -35,14 +32,11 @@ def get_school_overview(school_id: str):
     # Overall school mean
     school_mean = sum(r["score"] for r in rows) / len(rows) if rows else 0
 
-    # Class means
     class_scores = {}
     for r in rows:
         cid = r["class_id"]
         class_scores.setdefault(cid, []).append(r["score"])
     class_means = []
-    classes_data = db.table("classes").select("id, name").in_("id", list(class_scores.keys())).execute().data or []
-    classes_names = {c["id"]: c["name"] for c in classes_data}
     
     for cid, scores in class_scores.items():
         class_name = classes_names.get(cid, cid)
