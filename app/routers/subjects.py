@@ -13,7 +13,7 @@ class SubjectCreate(BaseModel):
 class SubjectUpdate(BaseModel):
     name: str
 
-@router.get("/")
+@router.get("")
 async def list_subjects(school_id: Optional[str] = Query(None)):
     db = get_supabase()
     query = db.table("subjects").select("id, name, school_id")
@@ -22,7 +22,7 @@ async def list_subjects(school_id: Optional[str] = Query(None)):
     
     return query.execute().data or []
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def create_subject(payload: SubjectCreate):
     db = get_supabase()
     

@@ -4,7 +4,7 @@ from app.core.database import get_supabase
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-@router.get("/")
+@router.get("")
 async def list_notifications(
     school_id: str = Query(...),
     teacher_id: Optional[str] = Query(None),

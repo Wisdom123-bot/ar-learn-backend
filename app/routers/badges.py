@@ -5,7 +5,7 @@ from app.schemas.badges import Badge, StudentBadgeAward, StudentBadgeResponse
 
 router = APIRouter(prefix="/badges", tags=["badges"])
 
-@router.get("/", response_model=List[Badge])
+@router.get("", response_model=List[Badge])
 async def get_all_badges():
     db = get_supabase()
     result = db.table("badges").select("*").execute()

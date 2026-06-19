@@ -33,7 +33,7 @@ async def get_teacher_from_token(
         return None
 
 
-@router.get("/")
+@router.get("")
 async def teacher_performance(
     school_id: str = Query(..., description="School UUID"),
     term: str = Query(..., description="Current term, e.g. 'Term 1 2025'"),

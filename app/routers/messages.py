@@ -5,7 +5,7 @@ from app.schemas.messages import MessageCreate, MessageResponse
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
-@router.post("/", response_model=MessageResponse)
+@router.post("", response_model=MessageResponse)
 async def send_message(msg: MessageCreate):
     db = get_supabase()
     result = db.table("messages").insert({
