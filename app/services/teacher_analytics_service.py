@@ -89,8 +89,12 @@ def compute_teacher_value_add(
             previous_mean = sum(prev_scores) / len(prev_scores)
             change = current_mean - previous_mean
 
-        # Value-add
-        value_add = current_mean - school_subject_mean if school_subject_mean is not None else None
+        # Value-add: NOW DEFINED AS Improvement from previous term
+        # This is more standard in Kenyan systems.
+        value_add = change if change is not None else 0
+
+        # Peer Difference: How the teacher's students did vs school-wide avg for same subjects
+        peer_difference = current_mean - school_subject_mean if school_subject_mean is not None else 0
 
         # Risk students
         student_scores = defaultdict(list)
@@ -108,7 +112,8 @@ def compute_teacher_value_add(
             "previous_mean": round(previous_mean, 2) if previous_mean is not None else None,
             "change": round(change, 2) if change is not None else None,
             "school_subject_mean": round(school_subject_mean, 2) if school_subject_mean is not None else None,
-            "value_add": round(value_add, 2) if value_add is not None else None,
+            "value_add": round(value_add, 2),
+            "peer_difference": round(peer_difference, 2),
             "risk_student_count": risk_count,
             "subjects_taught": subjects_taught,
         })

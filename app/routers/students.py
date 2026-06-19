@@ -147,6 +147,26 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
     total_att = sum(att_counts.values())
     attendance_pct = round((att_counts["present"] / total_att) * 100, 1) if total_att > 0 else 0
 
+    # 3. Class-wide comparison data
+    class_id = s["class_id"]
+    class_averages = {}
+    class_overall_mean = 0
+    try:
+        class_res_query = db.table("results").select("subject_id, score, subjects(name)").eq("class_id", class_id).eq("term", term).eq("approval_status", "approved").execute()
+        class_results = class_res_query.data or []
+        
+        class_subject_scores = defaultdict(list)
+        for cr in class_results:
+            subj_name = cr["subjects"]["name"] if cr.get("subjects") else cr["subject_id"]
+            class_subject_scores[subj_name].append(cr["score"])
+        
+        for subj, scores in class_subject_scores.items():
+            class_averages[subj] = round(sum(scores) / len(scores), 2)
+        
+        if class_results:
+            class_overall_mean = round(sum(cr["score"] for cr in class_results) / len(class_results), 2)
+    except Exception: pass
+
     # Fetch class teacher remarks separately for robustness
     class_teacher_remark = ""
     try:
@@ -187,6 +207,11 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
         "class_teacher_remark": class_teacher_remark,
         "weaknesses": [r["subject"] for r in results_summary if r["average"] < 50],
         "badges": badges,
+        "class_comparison": {
+            "subject_averages": class_averages,
+            "class_overall_mean": class_overall_mean,
+            "student_overall_mean": round(sum(r["average"] for r in results_summary) / len(results_summary), 2) if results_summary else 0
+        }
     }
 
 @router.get("/{student_id}/ai-summary")
