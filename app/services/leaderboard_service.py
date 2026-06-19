@@ -1,7 +1,6 @@
 from app.core.database import get_supabase
 from app.utils.cache import get_cache, set_cache
 from collections import defaultdict
-import collections # robustness
 
 def get_school_rankings(term: str):
     """
@@ -55,6 +54,7 @@ def get_school_rankings(term: str):
                 "entry_count": data["count"]
             })
 
+    # Sort by mean descending
     leaderboard.sort(key=lambda x: x["school_mean"], reverse=True)
     
     # Fetch subject names to make IDs readable

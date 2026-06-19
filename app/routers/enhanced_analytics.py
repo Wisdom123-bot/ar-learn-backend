@@ -189,6 +189,7 @@ async def school_leaderboard(
         s["county_rank"] = i + 1
 
     my_county_entry = next((s for s in county_rankings if s["school_id"] == school_id), None)
+    my_county_rank = next((i + 1 for i, s in enumerate(county_rankings) if s["school_id"] == school_id), None)
 
     return {
         "school_name": my_entry["school_name"],
@@ -196,10 +197,16 @@ async def school_leaderboard(
         "school_mean": my_entry["school_mean"],
         "national_rank": my_entry["national_rank"],
         "total_schools_national": len(all_rankings),
-        "county_rank": my_county_entry.get("county_rank") if my_county_entry else None,
+        "county_rank": my_county_rank,
         "total_schools_county": len(county_rankings),
-        "national_top_5": all_rankings[:5],
-        "county_top_5": county_rankings[:5],
+        "national_top_5": [
+            {"school_id": s["school_id"], "school_name": s["school_name"], "school_mean": s["school_mean"]} 
+            for s in all_rankings[:5]
+        ],
+        "county_top_5": [
+            {"school_id": s["school_id"], "school_name": s["school_name"], "school_mean": s["school_mean"]} 
+            for s in county_rankings[:5]
+        ],
         "subject_means": my_entry.get("subject_means_readable", my_entry["subject_means"])
     }
 
