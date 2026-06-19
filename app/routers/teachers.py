@@ -54,20 +54,18 @@ async def get_teacher_profile(teacher_id: str):
     school = db.table("schools").select("name").eq("id", t["school_id"]).single().execute()
     school_name = school.data["name"] if school.data else ""
 
-    # 2. Assignments (classes & subjects)
-    assignments = db.table("teacher_class_subjects").select("class_id, subject_id, is_class_teacher").eq("teacher_id", teacher_id).execute().data or []
-    # Enrich with names
-    enriched_assignments = []
-    for a in assignments:
-        cls = db.table("classes").select("name").eq("id", a["class_id"]).single().execute()
-        sub = db.table("subjects").select("name").eq("id", a["subject_id"]).single().execute()
-        enriched_assignments.append({
-            "class_name": cls.data["name"] if cls.data else "",
-            "subject_name": sub.data["name"] if sub.data else "",
+    # 2. Assignments (classes & subjects) - JOINED to avoid N+1
+    assignments = db.table("teacher_class_subjects").select("*, classes(name), subjects(name)").eq("teacher_id", teacher_id).execute().data or []
+    enriched_assignments = [
+        {
+            "class_name": a["classes"]["name"] if a.get("classes") else "Unknown",
+            "subject_name": a["subjects"]["name"] if a.get("subjects") else "Unknown",
             "is_class_teacher": a["is_class_teacher"],
-        })
+        }
+        for a in assignments
+    ]
 
-    # 3. Timetable (optional – fetch if there are entries)
+    # 3. Timetable
     timetable = db.table("timetable_entries").select("day_of_week, start_time, end_time, subjects(name)").eq("teacher_id", teacher_id).order("day_of_week, start_time").execute().data or []
 
     return {
@@ -85,16 +83,13 @@ async def get_teacher_profile(teacher_id: str):
 @router.get("/{teacher_id}/assignments")
 async def get_teacher_assignments(teacher_id: str):
     db = get_supabase()
-    assignments = db.table("teacher_class_subjects").select("class_id, subject_id, is_class_teacher").eq("teacher_id", teacher_id).execute().data or []
-    # Enrich with class names and subject names
-    enriched = []
-    for a in assignments:
-        cls = db.table("classes").select("name").eq("id", a["class_id"]).single().execute()
-        sub = db.table("subjects").select("name").eq("id", a["subject_id"]).single().execute()
-        a["class_name"] = cls.data["name"] if cls.data else "Unknown"
-        a["subject_name"] = sub.data["name"] if sub.data else "Unknown"
-        enriched.append(a)
-    return enriched
+    # Join with classes and subjects in one query
+    result = db.table("teacher_class_subjects").select("*, classes(name), subjects(name)").eq("teacher_id", teacher_id).execute()
+    data = result.data or []
+    for a in data:
+        a["class_name"] = a["classes"]["name"] if a.get("classes") else "Unknown"
+        a["subject_name"] = a["subjects"]["name"] if a.get("subjects") else "Unknown"
+    return data
 
 
 class PhoneUpdate(BaseModel):
@@ -112,36 +107,24 @@ async def update_teacher_phone(teacher_id: str, payload: PhoneUpdate):
 async def get_assigned_students(teacher_id: str):
     db = get_supabase()
 
-    # 1. Check teacher exists
-    teacher = db.table("teachers").select("*").eq("id", teacher_id).execute()
-    if not teacher.data:
-        raise HTTPException(status_code=404, detail="Teacher not found")
-
-    # 2. Get all class IDs this teacher is assigned to
+    # 1. Get all class IDs this teacher is assigned to
     assignments = db.table("teacher_class_subjects").select("class_id").eq("teacher_id", teacher_id).execute()
     if not assignments.data:
-        return []  # no students assigned yet
+        return []
 
     class_ids = list({a["class_id"] for a in assignments.data})
 
-    # 3. Fetch students in those classes
-    students = db.table("students").select("*").in_("class_id", class_ids).execute()
+    # 2. Fetch students in those classes with class names joined (Avoiding N+1)
+    result = db.table("students").select("*, classes(name)").in_("class_id", class_ids).execute()
+    data = result.data or []
 
-    # 4. Get class names for context
-    class_map = {}
-    classes = db.table("classes").select("id, name").in_("id", class_ids).execute()
-    for c in classes.data:
-        class_map[c["id"]] = c["name"]
-
-    # 5. Build response
-    result = []
-    for s in students.data:
-        result.append(StudentBrief(
+    return [
+        StudentBrief(
             id=s["id"],
             name=s["name"],
             admission_number=s["admission_number"],
             class_id=s["class_id"],
-            class_name=class_map.get(s["class_id"], "Unknown"),
-        ))
-
-    return result
+            class_name=s["classes"]["name"] if s.get("classes") else "Unknown",
+        )
+        for s in data
+    ]
