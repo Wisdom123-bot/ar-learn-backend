@@ -273,7 +273,7 @@ async def get_defaulters(
 @router.get("/term-fee")
 async def get_term_fee(school_id: str = Query(...), term: str = Query(...)):
     db = get_supabase()
-    result = db.table("term_fees").select("amount").eq("school_id", school_id).eq("term", term).single().execute()
+    result = db.table("term_fees").select("amount").eq("school_id", school_id).eq("term", term).maybe_single().execute()
     if result.data:
         return {"amount": result.data["amount"]}
     return {"amount": 0}
@@ -299,7 +299,7 @@ async def get_school_deficit(school_id: str = Query(...), term: str = Query(...)
     total_collected = sum(p["amount"] for p in payments)
 
     total_expected = len(students) * term_fee
-    deficit = max(0, total_expected - total_collected)
+    deficit = max(0.0, float(total_expected) - float(total_collected))
 
     return {
         "term_fee": term_fee,

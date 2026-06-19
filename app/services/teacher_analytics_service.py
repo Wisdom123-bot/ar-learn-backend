@@ -117,7 +117,7 @@ def compute_teacher_value_add(
 
     # Sort by value_add descending (best teachers first)
     # Ensure teachers with None value_add are at the bottom but not breaking sort
-    teacher_results.sort(key=lambda x: (x["value_add"] is not None, x["value_add"] if x["value_add"] is not None else -999), reverse=True)
+    teacher_results.sort(key=lambda x: (x["value_add"] is not None, x["value_add"] or -999), reverse=True)
 
     set_cache(cache_key, teacher_results, ttl=600)  # cache 10 min
     return teacher_results

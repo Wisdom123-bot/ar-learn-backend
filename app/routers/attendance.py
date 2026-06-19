@@ -134,9 +134,10 @@ async def student_attendance_stats(
 
     total = sum(stats.values())
     pct = (stats["present"] / total * 100) if total > 0 else 0
+    student_name = student.data[0]["name"] if student.data else "Unknown"
     return AttendanceStats(
         student_id=student_id,
-        student_name=student.data[0]["name"],
+        student_name=student_name,
         total_days=total,
         present=stats["present"],
         absent=stats["absent"],

@@ -41,9 +41,12 @@ def get_school_overview(school_id: str):
         cid = r["class_id"]
         class_scores.setdefault(cid, []).append(r["score"])
     class_means = []
+    classes_data = db.table("classes").select("id, name").in_("id", list(class_scores.keys())).execute().data or []
+    classes_names = {c["id"]: c["name"] for c in classes_data}
+    
     for cid, scores in class_scores.items():
-        class_name = db.table("classes").select("name").eq("id", cid).execute().data[0]["name"] if db.table("classes").select("name").eq("id", cid).execute().data else cid
-        mean = sum(scores) / len(scores)
+        class_name = classes_names.get(cid, cid)
+        mean = sum(scores) / len(scores) if scores else 0
         class_means.append({"class_id": cid, "class_name": class_name, "mean_score": round(mean, 2)})
     class_means.sort(key=lambda x: x["mean_score"], reverse=True)
 
@@ -53,9 +56,12 @@ def get_school_overview(school_id: str):
         sid = r["subject_id"]
         subject_scores.setdefault(sid, []).append(r["score"])
     subject_means = []
+    subjects_data = db.table("subjects").select("id, name").in_("id", list(subject_scores.keys())).execute().data or []
+    subjects_names = {s["id"]: s["name"] for s in subjects_data}
+    
     for sid, scores in subject_scores.items():
-        subj_name = db.table("subjects").select("name").eq("id", sid).execute().data[0]["name"] if db.table("subjects").select("name").eq("id", sid).execute().data else sid
-        mean = sum(scores) / len(scores)
+        subj_name = subjects_names.get(sid, sid)
+        mean = sum(scores) / len(scores) if scores else 0
         subject_means.append({"subject_id": sid, "subject_name": subj_name, "mean_score": round(mean, 2)})
     subject_means.sort(key=lambda x: x["mean_score"], reverse=True)
 

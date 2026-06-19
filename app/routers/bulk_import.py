@@ -147,11 +147,12 @@ async def import_students(
     max_num = 0
     if existing.data:
         for row in existing.data:
-            last_adm = row["admission_number"]
+            last_adm = row.get("admission_number")
+            if not last_adm: continue
             try:
                 # Extract numeric part (last digits)
                 num_part = ""
-                for char in reversed(last_adm):
+                for char in reversed(str(last_adm)):
                     if char.isdigit():
                         num_part = char + num_part
                     else:
