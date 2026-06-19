@@ -1,8 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from uuid import UUID
-from typing import Optional, List
+from typing import Optional, List, Dict
+
 from app.core.database import get_supabase
+from app.services.leaderboard_service import get_school_rankings
 from collections import defaultdict
 
 router = APIRouter(prefix="/analytics", tags=["enhanced-analytics"])
@@ -161,6 +163,45 @@ async def subject_ranking(
     # Sort by mean descending
     subject_means.sort(key=lambda x: x.mean_score, reverse=True)
     return subject_means
+
+
+@router.get("/leaderboard")
+async def school_leaderboard(
+    school_id: str = Query(...),
+    term: str = Query(...),
+):
+    """
+    Returns rankings and comparison data for a specific school.
+    """
+    all_rankings = get_school_rankings(term)
+    if not all_rankings:
+        return {"message": "No data available for this term"}
+
+    # Find current school
+    my_entry = next((s for s in all_rankings if s["school_id"] == school_id), None)
+    if not my_entry:
+        return {"message": "School not found in rankings for this term"}
+
+    # County rankings
+    county = my_entry["county"]
+    county_rankings = [s for s in all_rankings if s["county"] == county]
+    for i, s in enumerate(county_rankings):
+        s["county_rank"] = i + 1
+
+    my_county_entry = next((s for s in county_rankings if s["school_id"] == school_id), None)
+
+    return {
+        "school_name": my_entry["school_name"],
+        "county": county,
+        "school_mean": my_entry["school_mean"],
+        "national_rank": my_entry["national_rank"],
+        "total_schools_national": len(all_rankings),
+        "county_rank": my_county_entry.get("county_rank") if my_county_entry else None,
+        "total_schools_county": len(county_rankings),
+        "national_top_5": all_rankings[:5],
+        "county_top_5": county_rankings[:5],
+        "subject_means": my_entry.get("subject_means_readable", my_entry["subject_means"])
+    }
 
 
 @router.put("/class/{class_id}/target-mean")
