@@ -176,6 +176,10 @@ async def generate_timetable(school_id: str, config: TimetableConfig):
 
     # 7. Batch insert
     # Supabase/PostgREST handles batch insert with list of dicts
-    db.table("timetable_entries").insert(entries).execute()
+    # CHUNK INSERT to avoid massive payload/timeout
+    CHUNK_SIZE = 1000
+    for i in range(0, len(entries), CHUNK_SIZE):
+        chunk = entries[i:i + CHUNK_SIZE]
+        db.table("timetable_entries").insert(chunk).execute()
 
     return {"message": f"Timetable generated for {len(classes)} classes with {len(entries)} entries"}

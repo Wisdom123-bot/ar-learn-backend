@@ -26,16 +26,18 @@ async def dean_dashboard(
             key = a["status"].lower()
             if key in attendance_summary:
                 attendance_summary[key] += 1
-                s = student_map.get(a["student_id"])
-                if s:
-                    attendance_details[key].append({
-                        "student_id": s["id"],
-                        "student_name": s["name"],
-                        "admission_number": s["admission_number"],
-                        "class_name": s["classes"]["name"] if s.get("classes") else "N/A",
-                        "status": a["status"],
-                        "date": a["date"]
-                    })
+                # Limit details to 50 records to prevent massive payload
+                if len(attendance_details[key]) < 50:
+                    s = student_map.get(a["student_id"])
+                    if s:
+                        attendance_details[key].append({
+                            "student_id": s["id"],
+                            "student_name": s["name"],
+                            "admission_number": s["admission_number"],
+                            "class_name": s["classes"]["name"] if s.get("classes") else "N/A",
+                            "status": a["status"],
+                            "date": a["date"]
+                        })
 
     # 2. School-wide discipline summary
     discipline_summary = {"Minor": 0, "Major": 0, "Positive": 0}
@@ -48,30 +50,41 @@ async def dean_dashboard(
             cat = d["category"]
             if cat in discipline_summary:
                 discipline_summary[cat] += 1
-                discipline_details[cat].append({
-                    "student_name": d["students"]["name"] if d.get("students") else "Unknown",
-                    "admission_number": d["students"]["admission_number"] if d.get("students") else "N/A",
-                    "class_name": d["classes"]["name"] if d.get("classes") else "N/A",
-                    "category": cat,
-                    "description": d["description"],
-                    "incident_date": d["incident_date"],
-                    "action_taken": d.get("action_taken", "")
-                })
+                # Limit details to 50 records per category
+                if len(discipline_details[cat]) < 50:
+                    discipline_details[cat].append({
+                        "student_name": d["students"]["name"] if d.get("students") else "Unknown",
+                        "admission_number": d["students"]["admission_number"] if d.get("students") else "N/A",
+                        "class_name": d["classes"]["name"] if d.get("classes") else "N/A",
+                        "category": cat,
+                        "description": d["description"],
+                        "incident_date": d["incident_date"],
+                        "action_taken": d.get("action_taken", "")
+                    })
 
     # 3. Attendance concerns per class (classes with < 75% attendance rate)
     attendance_concerns = []
+    
+    # BATCH FETCH attendance for all students to avoid N+1 queries
+    all_att = []
+    if student_ids:
+        all_att = db.table("attendance").select("student_id, status").in_("student_id", student_ids).execute().data or []
+    
+    # Map attendance to classes
+    class_att = defaultdict(lambda: {"total": 0, "present": 0})
+    for a in all_att:
+        sid = a["student_id"]
+        s = student_map.get(sid)
+        if s:
+            cid = s["class_id"]
+            class_att[cid]["total"] += 1
+            if a["status"].lower() == "present":
+                class_att[cid]["present"] += 1
+                
     for cls in classes:
-        cls_students = db.table("students").select("id").eq("class_id", cls["id"]).execute().data
-        cls_student_ids = [s["id"] for s in cls_students]
-        total = present = 0
-        if cls_student_ids:
-            att = db.table("attendance").select("status").in_("student_id", cls_student_ids).execute().data or []
-            for a in att:
-                total += 1
-                if a["status"].lower() == "present":
-                    present += 1
-        if total > 0:
-            rate = (present / total) * 100
+        stats = class_att[cls["id"]]
+        if stats["total"] > 0:
+            rate = (stats["present"] / stats["total"]) * 100
             if rate < 75:
                 attendance_concerns.append({"class_name": cls["name"], "attendance_pct": round(rate, 1)})
 
@@ -86,19 +99,28 @@ async def dean_dashboard(
     # 5. Risk summary – count students with overall mean < 50
     risk_count = 0
     risk_class_counts = defaultdict(int)
-    for cls in classes:
-        cls_students = db.table("students").select("id").eq("class_id", cls["id"]).execute().data
-        cls_sids = [s["id"] for s in cls_students]
-        if not cls_sids:
-            continue
-        results = db.table("results").select("student_id, score").in_("student_id", cls_sids).eq("term", term).execute().data or []
-        student_scores = defaultdict(list)
-        for r in results:
-            student_scores[r["student_id"]].append(r["score"])
-        for sid, scores in student_scores.items():
-            if sum(scores) / len(scores) < 50:
-                risk_count += 1
-                risk_class_counts[cls["name"]] += 1
+    
+    # BATCH FETCH all results for this term
+    all_results = []
+    if student_ids:
+        all_results = db.table("results").select("student_id, score, class_id").in_("student_id", student_ids).eq("term", term).execute().data or []
+    
+    # Aggregate by student
+    student_scores = defaultdict(list)
+    student_class_id = {}
+    for r in all_results:
+        student_scores[r["student_id"]].append(r["score"])
+        student_class_id[r["student_id"]] = r["class_id"]
+        
+    # Create class name map
+    class_name_map = {c["id"]: c["name"] for c in classes}
+    
+    for sid, scores in student_scores.items():
+        if sum(scores) / len(scores) < 50:
+            risk_count += 1
+            cid = student_class_id.get(sid)
+            cname = class_name_map.get(cid, "Unknown")
+            risk_class_counts[cname] += 1
 
     return {
         "attendance_summary": attendance_summary,
