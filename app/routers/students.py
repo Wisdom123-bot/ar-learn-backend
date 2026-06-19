@@ -64,47 +64,88 @@ async def list_school_students(school_id: str):
 async def get_student_profile(student_id: str, term: str = Query("Term 1 2025")):
     db = get_supabase()
 
-    # Optimized query to fetch main student details and linked records
-    # Note: class_teacher_remarks and fee_payments are fetched separately to avoid PGRST108 errors
-    # if the database relationship isn't properly detected by PostgREST cache.
-    query = (
+    # 1. Fetch basic student info
+    student_query = (
         db.table("students")
-        .select("""
-            *,
-            classes(name, school_id),
-            schools(name),
-            results(*, subjects(name)),
-            attendance(status),
-            discipline_records(*),
-            fee_balances(*),
-            student_badges(id, term, badges(name, icon_url, description), teachers(name))
-        """)
+        .select("*, classes(name, school_id), schools(name)")
         .eq("id", student_id)
-        .eq("results.term", term)
-        .eq("results.approval_status", "approved")
-        .eq("fee_balances.term", term)
-        .limit(1)
+        .single()
         .execute()
     )
 
-    if not query.data:
+    if not student_query.data:
         raise HTTPException(status_code=404, detail="Student not found")
     
-    s = query.data[0]
+    s = student_query.data
 
-    # Fetch fee payments separately for robustness
+    # 2. Fetch linked records separately for maximum robustness (Avoiding PGRST108 errors)
+    
+    # Results
+    results = []
+    try:
+        res_query = db.table("results").select("*, subjects(name)").eq("student_id", student_id).eq("term", term).eq("approval_status", "approved").execute()
+        results = res_query.data or []
+    except Exception: pass
+
+    # Attendance
+    attendance = []
+    try:
+        att_query = db.table("attendance").select("status").eq("student_id", student_id).execute()
+        attendance = att_query.data or []
+    except Exception: pass
+
+    # Discipline
+    discipline = []
+    try:
+        disc_query = db.table("discipline_records").select("*").eq("student_id", student_id).execute()
+        discipline = disc_query.data or []
+    except Exception: pass
+
+    # Fees
+    fee_balance_data = {"balance": 0, "cleared": True}
     fee_payments = []
     try:
-        payments_query = (
-            db.table("fee_payments")
-            .select("*")
-            .eq("student_id", student_id)
-            .eq("term", term)
-            .execute()
-        )
-        fee_payments = payments_query.data or []
-    except Exception:
-        pass
+        bal_query = db.table("fee_balances").select("*").eq("student_id", student_id).eq("term", term).maybe_single().execute()
+        if bal_query.data:
+            fee_balance_data = bal_query.data
+            
+        pay_query = db.table("fee_payments").select("*").eq("student_id", student_id).eq("term", term).execute()
+        fee_payments = pay_query.data or []
+    except Exception: pass
+
+    # Badges
+    badges = []
+    try:
+        badge_query = db.table("student_badges").select("*, badges(name, icon_url, description), teachers(name)").eq("student_id", student_id).eq("term", term).execute()
+        for b in (badge_query.data or []):
+            badges.append({
+                "id": b["id"],
+                "term": b["term"],
+                "badge": b["badges"],
+                "awarded_by_name": b["teachers"]["name"] if b.get("teachers") else "System",
+            })
+    except Exception: pass
+
+    # Process Results
+    results_summary = []
+    subject_scores = defaultdict(list)
+    for r in results:
+        subject_scores[r["subjects"]["name"]].append(r["score"])
+    for subj, scores in subject_scores.items():
+        results_summary.append({
+            "subject": subj,
+            "scores": scores,
+            "average": round(sum(scores) / len(scores), 2),
+        })
+
+    # Process Attendance
+    att_counts = {"present": 0, "absent": 0, "sick": 0, "suspended": 0}
+    for a in attendance:
+        key = a["status"].lower()
+        if key in att_counts:
+            att_counts[key] += 1
+    total_att = sum(att_counts.values())
+    attendance_pct = round((att_counts["present"] / total_att) * 100, 1) if total_att > 0 else 0
 
     # Fetch class teacher remarks separately for robustness
     class_teacher_remark = ""
@@ -120,42 +161,7 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
         if remark_query.data:
             class_teacher_remark = remark_query.data[0]["remark"]
     except Exception:
-        # Fallback if table doesn't exist or query fails
         pass
-    
-    # Process results
-    results_summary = []
-    subject_scores = defaultdict(list)
-    for r in (s.get("results") or []):
-        subject_scores[r["subjects"]["name"]].append(r["score"])
-    for subj, scores in subject_scores.items():
-        results_summary.append({
-            "subject": subj,
-            "scores": scores,
-            "average": round(sum(scores) / len(scores), 2),
-        })
-
-    # Process attendance
-    att_counts = {"present": 0, "absent": 0, "sick": 0, "suspended": 0}
-    for a in (s.get("attendance") or []):
-        key = a["status"].lower()
-        if key in att_counts:
-            att_counts[key] += 1
-    total_att = sum(att_counts.values())
-    attendance_pct = round((att_counts["present"] / total_att) * 100, 1) if total_att > 0 else 0
-
-    # Process fees
-    fee_data = s["fee_balances"][0] if s.get("fee_balances") else {"balance": 0, "cleared": True}
-    
-    # Process badges
-    badges = []
-    for b in (s.get("student_badges") or []):
-        badges.append({
-            "id": b["id"],
-            "term": b["term"],
-            "badge": b["badges"],
-            "awarded_by_name": b["teachers"]["name"] if b.get("teachers") else "System",
-        })
 
     return {
         "student": {
@@ -172,10 +178,10 @@ async def get_student_profile(student_id: str, term: str = Query("Term 1 2025"))
             "percentage": attendance_pct,
             "total_days": total_att,
         },
-        "discipline": s.get("discipline_records") or [],
+        "discipline": discipline,
         "fee": {
-            "balance": fee_data["balance"],
-            "cleared": fee_data["cleared"],
+            "balance": fee_balance_data["balance"],
+            "cleared": fee_balance_data["cleared"],
             "payments": fee_payments,
         },
         "class_teacher_remark": class_teacher_remark,

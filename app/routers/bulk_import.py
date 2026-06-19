@@ -8,6 +8,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form, status
 from PyPDF2 import PdfReader
 from app.core.database import get_supabase
 from app.services.ai_parsing_service import parse_students_with_ai, parse_results_with_ai
+from app.services.ml_risk_service import train_model_async
 
 router = APIRouter(prefix="/import", tags=["bulk-import"])
 
@@ -299,6 +300,10 @@ async def import_results(
                 inserted += len(res.data) if res.data else 0
             except Exception as e:
                 errors.append(f"Batch failed: {str(e)}")
+
+    # Trigger ML training if enough new data was added
+    if inserted > 0:
+        train_model_async()
 
     return {
         "message": f"Successfully imported {inserted} results",

@@ -175,11 +175,22 @@ async def generate_timetable(school_id: str, config: TimetableConfig):
         raise HTTPException(status_code=400, detail="Could not generate any timetable entries. Check assignments and configuration.")
 
     # 7. Batch insert
-    # Supabase/PostgREST handles batch insert with list of dicts
     # CHUNK INSERT to avoid massive payload/timeout
     CHUNK_SIZE = 1000
     for i in range(0, len(entries), CHUNK_SIZE):
         chunk = entries[i:i + CHUNK_SIZE]
         db.table("timetable_entries").insert(chunk).execute()
+
+    # 8. Notify teachers
+    teachers = db.table("teachers").select("id").eq("school_id", school_id).execute().data or []
+    from app.services.notification_service import create_notification
+    for t in teachers:
+        create_notification(
+            school_id=school_id,
+            teacher_id=t["id"],
+            title="New Timetable Generated",
+            message="A new school-wide timetable has been generated. View your personal schedule in the 'My Timetable' module.",
+            category="system"
+        )
 
     return {"message": f"Timetable generated for {len(classes)} classes with {len(entries)} entries"}

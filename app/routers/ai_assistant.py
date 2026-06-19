@@ -6,6 +6,7 @@ from app.schemas.ai_assistant import AIQueryRequest
 from app.services.llm_client import ask_llm
 from app.services.tool_handler import execute_tool
 from app.dependencies import get_current_user
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import json
 import re
 

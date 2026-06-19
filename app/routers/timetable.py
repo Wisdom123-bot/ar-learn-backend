@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from typing import List, Optional
 from app.core.database import get_supabase
 from app.schemas.timetable import BulkTimetableRequest, TimetableEntryResponse
+from app.services.timetable_pdf_service import generate_timetable_pdf
 
 router = APIRouter(prefix="/timetable", tags=["timetable"])
 
@@ -78,3 +79,82 @@ async def delete_timetable_entry(entry_id: str):
     db = get_supabase()
     db.table("timetable_entries").delete().eq("id", entry_id).execute()
     return {"message": "Deleted"}
+
+
+@router.get("/teacher/{teacher_id}", response_model=List[TimetableEntryResponse])
+async def get_teacher_timetable(teacher_id: str):
+    db = get_supabase()
+    entries = (
+        db.table("timetable_entries")
+        .select("*, classes(name), subjects(name), teachers(name)")
+        .eq("teacher_id", teacher_id)
+        .order("day_of_week, start_time")
+        .execute()
+        .data or []
+    )
+    result = []
+    for e in entries:
+        result.append(TimetableEntryResponse(
+            id=e["id"],
+            class_id=e["class_id"],
+            class_name=e["classes"]["name"] if e.get("classes") else "",
+            subject_id=e["subject_id"],
+            subject_name=e["subjects"]["name"] if e.get("subjects") else "",
+            teacher_id=e["teacher_id"],
+            teacher_name=e["teachers"]["name"] if e.get("teachers") else "",
+            day_of_week=e["day_of_week"],
+            start_time=e["start_time"],
+            end_time=e["end_time"],
+            created_at=str(e["created_at"]),
+        ))
+    return result
+
+
+@router.get("/pdf/class/{class_id}")
+async def download_class_timetable_pdf(class_id: str):
+    db = get_supabase()
+    cls = db.table("classes").select("name, school_id, schools(name)").eq("id", class_id).single().execute().data
+    if not cls:
+        raise HTTPException(status_code=404, detail="Class not found")
+    
+    entries = (
+        db.table("timetable_entries")
+        .select("*, subjects(name), teachers(name)")
+        .eq("class_id", class_id)
+        .execute()
+        .data or []
+    )
+    
+    school_name = cls["schools"]["name"] if cls.get("schools") else "Ar-Learn School"
+    pdf_bytes = generate_timetable_pdf(entries, f"Class Timetable: {cls['name']}", school_name)
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=timetable_class_{class_id}.pdf"}
+    )
+
+
+@router.get("/pdf/teacher/{teacher_id}")
+async def download_teacher_timetable_pdf(teacher_id: str):
+    db = get_supabase()
+    teacher = db.table("teachers").select("name, school_id, schools(name)").eq("id", teacher_id).single().execute().data
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    
+    entries = (
+        db.table("timetable_entries")
+        .select("*, subjects(name), classes(name)")
+        .eq("teacher_id", teacher_id)
+        .execute()
+        .data or []
+    )
+    
+    school_name = teacher["schools"]["name"] if teacher.get("schools") else "Ar-Learn School"
+    pdf_bytes = generate_timetable_pdf(entries, f"Teacher Timetable: {teacher['name']}", school_name)
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=timetable_teacher_{teacher_id}.pdf"}
+    )
