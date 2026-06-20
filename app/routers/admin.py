@@ -7,6 +7,8 @@ from app.core.config import settings
 from app.core.security import verify_password, hash_password
 from app.services.rate_limit_service import list_banned_ips, unban_ip
 from app.services.email_service import send_email
+from app.services.audit_service import log_action
+from datetime import datetime, timedelta
 import os
 
 router = APIRouter(prefix="/admin", tags=["super-admin"])
@@ -77,6 +79,88 @@ def verify_admin_token(credentials: HTTPAuthorizationCredentials = Depends(HTTPB
 # --- School Management ---
 
 from app.schemas.school import SchoolRegistrationResponse  # reuse maybe
+
+# --- Subscription Management ---
+
+@router.get("/subscriptions/pending")
+async def list_pending_subscriptions(_: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    # Join with schools to show school name
+    requests = db.table("subscription_requests").select(
+        "*, schools(name, student_count)"
+    ).eq("status", "pending").execute().data or []
+    return requests
+
+@router.post("/subscriptions/{request_id}/approve")
+async def approve_subscription(request_id: str, _: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    
+    # Get request details
+    req = db.table("subscription_requests").select("*").eq("id", request_id).single().execute()
+    if not req.data:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    school_id = req.data["school_id"]
+    tier = req.data["requested_tier"]
+    
+    # Set expiry to 4 months from now
+    expiry = (datetime.now() + timedelta(days=120)).isoformat()
+    
+    # Update school
+    db.table("schools").update({
+        "subscription_tier": tier,
+        "subscription_expiry": expiry,
+        "is_manual_override": False
+    }).eq("id", school_id).execute()
+    
+    # Update request status
+    db.table("subscription_requests").update({"status": "approved"}).eq("id", request_id).execute()
+    
+    # Check for student count discrepancy to calculate debt
+    # If students increased since request, add the difference to debt
+    school = db.table("schools").select("student_count, subscription_debt").eq("id", school_id).single().execute()
+    current_students = school.data.get("student_count", 0)
+    requested_students = req.data.get("student_count_at_request", 0)
+    
+    if current_students > requested_students:
+        price_per_student = 10 if tier == "standard" else 17
+        debt_incurred = (current_students - requested_students) * price_per_student * 4
+        new_debt = school.data.get("subscription_debt", 0) + debt_incurred
+        db.table("schools").update({"subscription_debt": new_debt}).eq("id", school_id).execute()
+        
+        log_action(
+            school_id=school_id,
+            action="DEBT_INCURRED",
+            entity_type="school",
+            entity_id=school_id,
+            new_value={"debt": debt_incurred, "reason": "Student count increase during sub approval"}
+        )
+
+    log_action(
+        school_id=school_id,
+        action="SUBSCRIPTION_APPROVED",
+        entity_type="subscription",
+        entity_id=request_id,
+        new_value={"tier": tier, "expiry": expiry}
+    )
+    
+    return {"message": f"Subscription for {tier} approved until {expiry}"}
+
+@router.post("/subscriptions/{request_id}/decline")
+async def decline_subscription(request_id: str, _: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    db.table("subscription_requests").update({"status": "declined"}).eq("id", request_id).execute()
+    return {"message": "Subscription request declined"}
+
+@router.put("/schools/{school_id}/override")
+async def manual_subscription_override(school_id: str, tier: str, active: bool, _: bool = Depends(verify_admin_token)):
+    db = get_supabase()
+    db.table("schools").update({
+        "subscription_tier": tier,
+        "is_manual_override": active,
+        "subscription_expiry": (datetime.now() + timedelta(days=365)).isoformat() if active else None
+    }).eq("id", school_id).execute()
+    return {"message": f"Manual override set to {tier} (Active: {active})"}
 
 @router.get("/schools")
 async def list_all_schools(_: bool = Depends(verify_admin_token)):

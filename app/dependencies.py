@@ -2,6 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.security import decode_token
 from app.core.database import get_supabase
+import datetime
 
 security = HTTPBearer()
 
@@ -37,8 +38,41 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     return result.data
 
 async def get_current_active_user(current_user: dict = Depends(get_current_user)):
-    # You could add checks for is_active here if that column exists on teachers or schools
+    db = get_supabase()
+    school_id = current_user["school_id"]
+    
+    school = db.table("schools").select("is_active, subscription_tier, subscription_expiry, is_manual_override").eq("id", school_id).single().execute()
+    if not school.data or not school.data.get("is_active", True):
+         raise HTTPException(status_code=403, detail="Account suspended or school not found")
+
+    # Inject subscription info into user object
+    is_active = False
+    if school.data["is_manual_override"]:
+        is_active = True
+    elif school.data["subscription_expiry"]:
+        expiry = datetime.datetime.fromisoformat(school.data["subscription_expiry"].replace('Z', '+00:00'))
+        if expiry > datetime.datetime.now(expiry.tzinfo):
+            is_active = True
+    
+    current_user["subscription_tier"] = school.data["subscription_tier"] if is_active else "basic"
     return current_user
+
+async def require_tier(required_tier: str):
+    """
+    Dependency to require a specific subscription tier.
+    Tiers: basic < standard < elite
+    """
+    tier_hierarchy = {"basic": 0, "standard": 1, "elite": 2}
+    
+    async def tier_checker(current_user: dict = Depends(get_current_active_user)):
+        user_tier = current_user.get("subscription_tier", "basic")
+        if tier_hierarchy.get(user_tier, 0) < tier_hierarchy.get(required_tier, 0):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail=f"This feature requires {required_tier.capitalize()} subscription."
+            )
+        return current_user
+    return tier_checker
 
 async def require_role(role: str):
     """

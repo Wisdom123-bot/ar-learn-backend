@@ -5,7 +5,7 @@ from app.core.database import get_supabase
 from app.schemas.ai_assistant import AIQueryRequest
 from app.services.llm_client import ask_llm
 from app.services.tool_handler import execute_tool
-from app.dependencies import get_current_user
+from app.dependencies import get_current_active_user, require_tier
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import json
 import re
@@ -93,7 +93,7 @@ async def assistant_streamer(question: str, context: dict) -> AsyncGenerator[str
 @router.post("/ask")
 async def ask_assistant(
     payload: AIQueryRequest,
-    teacher: dict = Depends(get_current_user),
+    teacher: dict = Depends(require_tier("elite")),
 ):
     if teacher["school_id"] != payload.school_id:
         raise HTTPException(status_code=403, detail="Access denied")

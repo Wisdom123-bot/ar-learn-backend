@@ -1,106 +1,44 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import schools
-from app.routers import auth
-from app.routers import schools, auth, teachers, results, analytics, attendance, risk, approval,  reports, fees, parents, ai_assistant
-from app.routers import bulk_import
-from app.routers import timetable
-from app.routers import teacher_analytics
-from app.routers import headteacher
-from app.routers import admin
-from app.routers import discipline
-from app.routers import class_teacher
-from app.routers import enhanced_analytics
-from app.routers import dean
-from app.routers import subjects
-from app.routers import print as print_router
-from app.routers import students
-from app.routers import notifications
-from app.routers import report_builder
-from app.routers import exports
-from app.routers import ml_risk
-from app.routers import backup
-from app.routers import classes
-from app.routers import timetable_auto
-from app.routers import admissions
-from app.routers import badges
-from app.routers import messages
-from app.routers import public
+from app.routers import register_routers
+import logging
 
 app = FastAPI(
     title="Ar-Learn API",
     description="School Management & Analytics System for Kenyan Schools",
-    version="0.1.0",
+    version="0.1.1",
 )
 
-# Robust logging to catch silent crashes
-import logging
+# Robust logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Middleware for request logging
 @app.middleware("http")
 async def log_requests(request, call_next):
     logger.info(f"Incoming request: {request.method} {request.url}")
     try:
         response = await call_next(request)
-        logger.info(f"Response status: {response.status_code}")
         return response
     except Exception as e:
         logger.error(f"Request failed: {str(e)}", exc_info=True)
         raise e
 
-
-# Allow all origins for development (restrict in production)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
-app.include_router(schools.router)
-app.include_router(auth.router)
-app.include_router(teachers.router)
-app.include_router(results.router)
-app.include_router(analytics.router)
-app.include_router(attendance.router)
-app.include_router(risk.router)
-app.include_router(approval.router)
-app.include_router(reports.router)
-app.include_router(fees.router)
-app.include_router(parents.router)
-app.include_router(ai_assistant.router)
-app.include_router(bulk_import.router)
-app.include_router(timetable.router)
-app.include_router(teacher_analytics.router)
-app.include_router(headteacher.router)
-app.include_router(admin.router)
-app.include_router(discipline.router)
-app.include_router(class_teacher.router)
-app.include_router(enhanced_analytics.router)
-app.include_router(dean.router)
-app.include_router(subjects.router)
-app.include_router(print_router.router)
-app.include_router(students.router)
-app.include_router(notifications.router)
-app.include_router(report_builder.router)
-app.include_router(exports.router)
-app.include_router(ml_risk.router)
-app.include_router(backup.router)
-app.include_router(classes.router)
-app.include_router(timetable_auto.router)
-app.include_router(admissions.router)
-app.include_router(badges.router)
-app.include_router(messages.router)
-app.include_router(public.router)
-
+# Centralized Router Registration
+register_routers(app)
 
 @app.get("/")
 async def root():
-    return {"message": "Ar-Learn API is running"}
-
+    return {"message": "Ar-Learn API - Hardened Version"}
 
 @app.get("/health")
 async def health_check():

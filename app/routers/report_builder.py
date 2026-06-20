@@ -10,6 +10,9 @@ router = APIRouter(prefix="/report-builder", tags=["report-builder"])
 class TemplateCreate(BaseModel):
     name: str
     logo_url: Optional[str] = ""
+    motto: Optional[str] = ""
+    phone: Optional[str] = ""
+    email: Optional[str] = ""
     primary_color: str = "#1e3a8a"
     secondary_color: str = "#f0f4ff"
     show_attendance: bool = True
@@ -22,6 +25,9 @@ class TemplateResponse(BaseModel):
     id: UUID
     name: str
     logo_url: str
+    motto: str
+    phone: str
+    email: str
     primary_color: str
     secondary_color: str
     show_attendance: bool
@@ -41,6 +47,9 @@ async def list_templates(school_id: str):
             id=t["id"],
             name=t["name"],
             logo_url=t.get("logo_url", ""),
+            motto=t.get("motto", ""),
+            phone=t.get("phone", ""),
+            email=t.get("email", ""),
             primary_color=t.get("primary_color", "#1e3a8a"),
             secondary_color=t.get("secondary_color", "#f0f4ff"),
             show_attendance=t.get("show_attendance", True),
@@ -65,6 +74,9 @@ async def create_template(school_id: str, payload: TemplateCreate):
         "school_id": school_id,
         "name": payload.name,
         "logo_url": payload.logo_url or "",
+        "motto": payload.motto or "",
+        "phone": payload.phone or "",
+        "email": payload.email or "",
         "primary_color": payload.primary_color,
         "secondary_color": payload.secondary_color,
         "show_attendance": payload.show_attendance,
@@ -80,6 +92,9 @@ async def create_template(school_id: str, payload: TemplateCreate):
         id=t["id"],
         name=t["name"],
         logo_url=t.get("logo_url", ""),
+        motto=t.get("motto", ""),
+        phone=t.get("phone", ""),
+        email=t.get("email", ""),
         primary_color=t.get("primary_color", "#1e3a8a"),
         secondary_color=t.get("secondary_color", "#f0f4ff"),
         show_attendance=t.get("show_attendance", True),
@@ -101,6 +116,9 @@ async def update_template(school_id: str, template_id: str, payload: TemplateCre
     data = {
         "name": payload.name,
         "logo_url": payload.logo_url or "",
+        "motto": payload.motto or "",
+        "phone": payload.phone or "",
+        "email": payload.email or "",
         "primary_color": payload.primary_color,
         "secondary_color": payload.secondary_color,
         "show_attendance": payload.show_attendance,
@@ -116,6 +134,9 @@ async def update_template(school_id: str, template_id: str, payload: TemplateCre
         id=updated["id"],
         name=updated["name"],
         logo_url=updated.get("logo_url", ""),
+        motto=updated.get("motto", ""),
+        phone=updated.get("phone", ""),
+        email=updated.get("email", ""),
         primary_color=updated.get("primary_color", "#1e3a8a"),
         secondary_color=updated.get("secondary_color", "#f0f4ff"),
         show_attendance=updated.get("show_attendance", True),

@@ -1,23 +1,30 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Optional
 from app.core.database import get_supabase
 from app.schemas.attendance import BulkAttendanceRequest, AttendanceStats
+from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
 
 @router.post("/record")
-async def record_attendance(payload: BulkAttendanceRequest):
+async def record_attendance(
+    payload: BulkAttendanceRequest,
+    current_user: dict = Depends(get_current_user)
+):
     """
     Records or updates attendance for a list of students on a given date.
-    Uses a single upsert operation – handles 100,000 records instantly.
+    Secure: Verifies class ownership.
     """
     db = get_supabase()
 
-    # 1. Verify class exists
-    cls = db.table("classes").select("id").eq("id", str(payload.class_id)).execute()
+    # 1. Verify class exists and belongs to the teacher's school
+    cls = db.table("classes").select("id, school_id").eq("id", str(payload.class_id)).single().execute()
     if not cls.data:
-        raise HTTPException(status_code=404, detail="Class not found")
+        raise HTTPException(status_code=404, detail="Class not found.")
+    
+    if cls.data["school_id"] != current_user["school_id"]:
+        raise HTTPException(status_code=403, detail="Access denied: Class belongs to another school.")
 
     # 2. Build rows for upsert
     rows = [
@@ -26,38 +33,47 @@ async def record_attendance(payload: BulkAttendanceRequest):
             "class_id": str(payload.class_id),
             "date": entry.date.isoformat(),
             "status": entry.status,
-            "recorded_by": str(payload.recorded_by) if payload.recorded_by else None,
+            "recorded_by": str(current_user["id"]),
         }
         for entry in payload.records
     ]
 
     # 3. Single database call – upsert on (student_id, date)
     try:
-        result = db.table("attendance").upsert(
+        db.table("attendance").upsert(
             rows,
             on_conflict="student_id,date"
         ).execute()
         return {
-            "message": f"{len(rows)} attendance records saved",
+            "message": f"Successfully archived {len(rows)} attendance records.",
             "count": len(rows),
         }
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to save attendance: {str(e)}"
+            detail=f"Attendance archival failure: {str(e)}"
         )
 
-
-# ---------- Statistics Endpoints (unchanged) ----------
 
 @router.get("/stats/class/{class_id}", response_model=List[AttendanceStats])
 async def class_attendance_stats(
     class_id: str,
     term_start: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
     term_end: Optional[str] = Query(None, description="End date YYYY-MM-DD"),
+    current_user: dict = Depends(get_current_user)
 ):
+    """
+    Optimized class statistics using batch fetching.
+    Secure: Verifies school membership.
+    """
     db = get_supabase()
 
+    # 1. Verification
+    cls = db.table("classes").select("school_id").eq("id", class_id).single().execute()
+    if not cls.data or cls.data["school_id"] != current_user["school_id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # 2. Fetch all students in class
     students = db.table("students").select("id, name").eq("class_id", class_id).execute().data
     if not students:
         return []
@@ -65,31 +81,27 @@ async def class_attendance_stats(
     student_ids = [s["id"] for s in students]
     student_map = {s["id"]: s["name"] for s in students}
 
-    query = db.table("attendance").select("*").in_("student_id", student_ids)
+    # 3. Batch fetch all attendance records for these students in the period
+    query = db.table("attendance").select("student_id, status").in_("student_id", student_ids)
     if term_start:
         query = query.gte("date", term_start)
     if term_end:
         query = query.lte("date", term_end)
     records = query.execute().data or []
 
-    stats_map = {}
+    # 4. In-memory aggregation (O(N) instead of O(N^2))
+    stats_map = {sid: {"present": 0, "absent": 0, "sick": 0, "suspended": 0} for sid in student_ids}
+    
     for r in records:
         sid = r["student_id"]
-        if sid not in stats_map:
-            stats_map[sid] = {"present": 0, "absent": 0, "sick": 0, "suspended": 0}
         status_lower = r["status"].lower()
-        if status_lower == "present":
-            stats_map[sid]["present"] += 1
-        elif status_lower == "absent":
-            stats_map[sid]["absent"] += 1
-        elif status_lower == "sick":
-            stats_map[sid]["sick"] += 1
-        elif status_lower == "suspended":
-            stats_map[sid]["suspended"] += 1
+        if sid in stats_map and status_lower in stats_map[sid]:
+            stats_map[sid][status_lower] += 1
 
+    # 5. Build response
     result = []
     for sid, name in student_map.items():
-        s = stats_map.get(sid, {"present": 0, "absent": 0, "sick": 0, "suspended": 0})
+        s = stats_map[sid]
         total = sum(s.values())
         pct = (s["present"] / total * 100) if total > 0 else 0
         result.append(AttendanceStats(
@@ -112,20 +124,30 @@ async def student_attendance_stats(
     student_id: str,
     term_start: Optional[str] = Query(None),
     term_end: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user)
 ):
+    """
+    Secure individual stats fetch.
+    """
     db = get_supabase()
 
-    student = db.table("students").select("id, name").eq("id", student_id).execute()
+    # 1. Verify student school
+    student = db.table("students").select("id, name, school_id").eq("id", student_id).single().execute()
     if not student.data:
-        raise HTTPException(status_code=404, detail="Student not found")
+        raise HTTPException(status_code=404, detail="Student not found.")
+    
+    if student.data["school_id"] != current_user["school_id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
-    query = db.table("attendance").select("*").eq("student_id", student_id)
+    # 2. Fetch records
+    query = db.table("attendance").select("status").eq("student_id", student_id)
     if term_start:
         query = query.gte("date", term_start)
     if term_end:
         query = query.lte("date", term_end)
     records = query.execute().data or []
 
+    # 3. Aggregate
     stats = {"present": 0, "absent": 0, "sick": 0, "suspended": 0}
     for r in records:
         status_lower = r["status"].lower()
@@ -134,10 +156,9 @@ async def student_attendance_stats(
 
     total = sum(stats.values())
     pct = (stats["present"] / total * 100) if total > 0 else 0
-    student_name = student.data[0]["name"] if student.data else "Unknown"
     return AttendanceStats(
         student_id=student_id,
-        student_name=student_name,
+        student_name=student.data["name"],
         total_days=total,
         present=stats["present"],
         absent=stats["absent"],

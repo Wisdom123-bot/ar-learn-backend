@@ -30,6 +30,9 @@ async def print_report(
     primary_color = "#1e3a8a"
     secondary_color = "#f0f4ff"
     logo_url = ""
+    motto = ""
+    phone = ""
+    email = ""
     show_attendance = True
     show_fee_status = True
     show_teacher_remarks = True
@@ -47,6 +50,10 @@ async def print_report(
             t = template.data
             primary_color = t.get("primary_color", "#1e3a8a")
             secondary_color = t.get("secondary_color", "#f0f4ff")
+            motto = t.get("motto", "")
+            phone = t.get("phone", "")
+            email = t.get("email", "")
+
             # Only use template logo if premium, otherwise fallback to school logo or none
             if is_premium:
                 logo_url = t.get("logo_url", "") or logo_url
@@ -160,58 +167,75 @@ async def print_report(
                 padding: 20px;
                 color: #333;
             }}
-            .header {{ text-align: center; margin-bottom: 20px; }}
-            .header h1 {{ margin: 0; font-size: 24px; color: {primary_color}; }}
-            .header p {{ margin: 4px 0; color: #666; }}
-            .section {{ margin-bottom: 20px; }}
+            .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px solid {primary_color}; padding-bottom: 20px; }}
+            .header h1 {{ margin: 0; font-size: 28px; color: {primary_color}; text-transform: uppercase; }}
+            .header .motto {{ font-style: italic; color: #555; margin: 4px 0; font-size: 0.9em; }}
+            .header .contact {{ font-size: 0.8em; color: #777; margin-top: 8px; }}
+            .section {{ margin-bottom: 25px; }}
             table {{ width: 100%; border-collapse: collapse; margin-bottom: 10px; }}
-            th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
-            th {{ background: {primary_color}; color: white; }}
+            th, td {{ border: 1px solid #ccc; padding: 10px; text-align: left; }}
+            th {{ background: {primary_color}; color: white; text-transform: uppercase; font-size: 0.85em; }}
             .score {{ text-align: center; }}
-            .footer {{ margin-top: 30px; font-size: 0.9em; color: #555; }}
-            .badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; margin-left: 5px; }}
-            .cleared {{ background: #d4edda; color: #155724; }}
-            .not-cleared {{ background: #f8d7da; color: #721c24; }}
+            .footer {{ margin-top: 40px; font-size: 0.85em; color: #777; border-top: 1px solid #eee; pt: 10px; }}
+            .badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; margin-left: 5px; font-weight: bold; }}
+            .cleared {{ background: #d1fae5; color: #065f46; }}
+            .not-cleared {{ background: #fee2e2; color: #991b1b; }}
+            h3 {{ border-left: 4px solid {primary_color}; padding-left: 10px; margin-bottom: 15px; color: {primary_color}; }}
         </style>
     </head>
     <body>
         <div class="header">
-            {f'<img src="{logo_url}" alt="Logo" style="max-height: 60px; margin-bottom: 10px;">' if logo_url else ''}
+            {f'<img src="{logo_url}" alt="Logo" style="max-height: 80px; margin-bottom: 10px;">' if logo_url else ''}
             <h1>{school_name}</h1>
+            {f'<p class="motto">"{motto}"</p>' if motto else ''}
             <p>{school_county} County</p>
-            <h2 style="color:{primary_color};">Student Report Card</h2>
+            <div class="contact">
+                {f'<span>📞 {phone}</span>' if phone else ''}
+                {f'<span style="margin-left:15px;">✉️ {email}</span>' if email else ''}
+            </div>
+            <h2 style="margin-top:20px; color:{primary_color}; letter-spacing: 2px; text-transform: uppercase;">Student Report Card</h2>
+        </div>
+
+        <div class="section" style="display: grid; grid-template-cols: 1fr 1fr; gap: 20px;">
+            <div>
+                <p><strong>Student Name:</strong> {s['name']}</p>
+                <p><strong>Admission No:</strong> {s['admission_number']}</p>
+            </div>
+            <div>
+                <p><strong>Class:</strong> {class_name}</p>
+                <p><strong>Academic Term:</strong> {term}</p>
+            </div>
         </div>
 
         <div class="section">
-            <p><strong>Name:</strong> {s['name']}</p>
-            <p><strong>Admission No:</strong> {s['admission_number']}</p>
-            <p><strong>Class:</strong> {class_name}</p>
-            <p><strong>Term:</strong> {term}</p>
-        </div>
-
-        <div class="section">
-            <h3 style="color:{primary_color};">Subject Scores</h3>
+            <h3>Academic Performance</h3>
             <table>
                 <thead>
-                    <tr><th>Subject</th><th class="score">Score (%)</th></tr>
+                    <tr><th>Subject & Teacher Remarks</th><th class="score" style="width: 100px;">Score (%)</th></tr>
                 </thead>
                 <tbody>
                     {subject_rows}
-                    <tr style="font-weight:bold; background: {secondary_color};">
-                        <td>Mean Score</td>
-                        <td class="score">{mean}</td>
+                    <tr style="font-weight:bold; background: {secondary_color}; border-top: 2px solid {primary_color};">
+                        <td style="text-align: right; padding-right: 20px;">OVERALL MEAN SCORE</td>
+                        <td class="score">{mean}%</td>
                     </tr>
                 </tbody>
             </table>
         </div>
 
-        {attendance_html}
-        {fee_html}
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            {attendance_html}
+            {fee_html}
+        </div>
+        
         {remarks_html}
         {evaluation_html}
 
         <div class="footer">
-            <p>Printed on: <span id="date"></span></p>
+            <div style="display: flex; justify-content: space-between;">
+                <p>Official School Document</p>
+                <p>Generated on: <span id="date"></span></p>
+            </div>
         </div>
 
         <script>

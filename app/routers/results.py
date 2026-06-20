@@ -1,8 +1,9 @@
 import asyncio
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from app.core.database import get_supabase
 from app.schemas.result import BulkResultRequest
 from app.services.notification_service import create_notification
+from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/results", tags=["results"])
 
@@ -10,30 +11,26 @@ CHUNK_SIZE = 5000   # safe batch size for Supabase
 
 
 @router.post("/submit")
-async def submit_results(payload: BulkResultRequest):
+async def submit_results(
+    payload: BulkResultRequest,
+    current_user: dict = Depends(get_current_user)
+):
     db = get_supabase()
 
-    # 1. Verify teacher and get school
-    teacher = (
-        db.table("teachers")
-        .select("id, name, school_id")
-        .eq("id", str(payload.teacher_id))
-        .single()
-        .execute()
-    )
-    if not teacher.data:
-        raise HTTPException(status_code=404, detail="Teacher not found")
+    # 1. Verify current user is the one submitting and get school context
+    if str(payload.teacher_id) != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Forbidden: You can only submit results for yourself.")
+    
+    teacher_id = current_user["id"]
+    teacher_name = current_user["name"]
+    school_id = current_user["school_id"]
 
-    teacher_id = str(payload.teacher_id)
-    teacher_name = teacher.data["name"]
-    school_id = teacher.data["school_id"]
-
-    # 2. Collect unique IDs from payload
+    # 2. Collect unique IDs from payload for batch validation
     class_ids = list({str(e.class_id) for e in payload.results})
     subject_ids = list({str(e.subject_id) for e in payload.results})
     student_ids = list({str(e.student_id) for e in payload.results})
 
-    # 3. Fetch teacher assignments in one query
+    # 3. Fetch teacher assignments in one query to verify permissions
     assignments = (
         db.table("teacher_class_subjects")
         .select("class_id, subject_id")
@@ -45,34 +42,44 @@ async def submit_results(payload: BulkResultRequest):
     )
     allowed = {(a["class_id"], a["subject_id"]) for a in assignments}
 
-    # 4. Fetch students in one query
+    # 4. Fetch students in one query to verify they belong to the correct school and class
     students = (
         db.table("students")
-        .select("id, class_id")
+        .select("id, class_id, school_id")
         .in_("id", student_ids)
         .execute()
         .data or []
     )
-    student_class = {s["id"]: s["class_id"] for s in students}
+    student_meta = {s["id"]: {"class_id": s["class_id"], "school_id": s["school_id"]} for s in students}
 
-    # 5. In‑memory validation
+    # 5. Strict Validation: RBAC, School, and Class consistency
     for entry in payload.results:
         cid = str(entry.class_id)
         sid = str(entry.subject_id)
         st_id = str(entry.student_id)
 
+        # Ensure teacher is assigned to this specific class-subject pair
         if (cid, sid) not in allowed:
             raise HTTPException(
                 status_code=403,
-                detail=f"Teacher not assigned to class {cid} for subject {sid}",
+                detail=f"Access denied: You are not assigned to class {cid} for subject {sid}",
             )
-        if st_id not in student_class or student_class[st_id] != cid:
+        
+        # Verify student exists and belongs to the teacher's school
+        if st_id not in student_meta:
+            raise HTTPException(status_code=404, detail=f"Student {st_id} not found.")
+        
+        if student_meta[st_id]["school_id"] != school_id:
+            raise HTTPException(status_code=403, detail="Access denied: Student belongs to another institution.")
+            
+        # Ensure student is actually in the class they are being graded for
+        if student_meta[st_id]["class_id"] != cid:
             raise HTTPException(
                 status_code=400,
-                detail=f"Student {st_id} does not belong to class {cid}",
+                detail=f"Data inconsistency: Student {st_id} does not belong to class {cid}",
             )
 
-    # 6. Prepare all rows
+    # 6. Prepare all rows for bulk insert
     rows = [
         {
             "student_id": str(e.student_id),
@@ -88,7 +95,7 @@ async def submit_results(payload: BulkResultRequest):
         for e in payload.results
     ]
 
-    # 7. Chunked insert
+    # 7. Chunked insert for high performance and stability
     inserted = 0
     for i in range(0, len(rows), CHUNK_SIZE):
         chunk = rows[i : i + CHUNK_SIZE]
@@ -99,10 +106,10 @@ async def submit_results(payload: BulkResultRequest):
         except Exception as e:
             raise HTTPException(
                 status_code=500,
-                detail=f"Insert failed in chunk {i//CHUNK_SIZE + 1}: {str(e)}",
+                detail=f"Internal Database Error during submission: {str(e)}",
             )
 
-    # 8. Notify admins (sync is fine for a few admins)
+    # 8. Notify school administration
     admins = (
         db.table("teachers")
         .select("id")
@@ -115,24 +122,18 @@ async def submit_results(payload: BulkResultRequest):
         create_notification(
             school_id=school_id,
             teacher_id=admin["id"],
-            title="New Results Submitted",
-            message=f"{teacher_name} submitted {inserted} results for {payload.term}.",
+            title="Academic Results Filed",
+            message=f"{teacher_name} filed {inserted} student results for {payload.term}.",
             category="result",
         )
-    create_notification(
-        school_id=school_id,
-        title="Results Submitted",
-        message=f"{inserted} results submitted by {teacher_name}.",
-        category="result",
-    )
 
-    # 9. ML training in the background (non‑blocking)
+    # 9. Trigger background ML model refresh
     try:
         from app.services.ml_risk_service import train_model_async as ml_train
         asyncio.create_task(
-            asyncio.to_thread(ml_train, school_id)  # runs in thread, doesn't block
+            asyncio.to_thread(ml_train, school_id)
         )
     except Exception:
         pass
 
-    return {"message": f"{inserted} results submitted successfully", "count": inserted}
+    return {"message": f"{inserted} results archived successfully", "count": inserted}

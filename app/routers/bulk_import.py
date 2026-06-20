@@ -9,8 +9,9 @@ from PyPDF2 import PdfReader
 from app.core.database import get_supabase
 from app.services.ai_parsing_service import parse_students_with_ai, parse_results_with_ai
 from app.services.ml_risk_service import train_model_async
-
-router = APIRouter(prefix="/import", tags=["bulk-import"])
+from app.services.audit_service import log_action
+from app.dependencies import get_current_user
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, status, Depends
 
 BATCH_SIZE = 50   # Insert 50 students at a time
 
@@ -106,7 +107,11 @@ async def import_students(
     class_id: str = Form(...),
     file: UploadFile = File(...),
     use_ai: bool = Form(False),
+    current_user: dict = Depends(get_current_user)
 ):
+    if school_id != current_user["school_id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+        
     db = get_supabase()
 
     # Validate school and class
@@ -200,6 +205,23 @@ async def import_students(
                 except Exception as single_err:
                     errors.append(f"{student['name']}: {str(single_err)}")
 
+    if inserted > 0:
+        # Update student count (manual loop since we don't have bulk increment yet)
+        # or just set it to the count
+        db.table("schools").update({
+            "student_count": db.table("students").select("id", count="exact").eq("school_id", school_id).execute().count
+        }).eq("id", school_id).execute()
+
+        log_action(
+            school_id=school_id,
+            action="STUDENTS_BULK_IMPORTED",
+            actor_id=current_user["id"],
+            actor_name=current_user["name"],
+            entity_type="school",
+            entity_id=school_id,
+            new_value={"count": inserted}
+        )
+
     return {"message": f"{inserted} students imported successfully", "count": inserted, "errors": errors}
 
 
@@ -209,7 +231,11 @@ async def import_results(
     teacher_id: str = Form(...),
     class_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
 ):
+    if school_id != current_user["school_id"]:
+         raise HTTPException(status_code=403, detail="Forbidden")
+
     db = get_supabase()
 
     # 1. Verify school and teacher

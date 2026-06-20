@@ -5,9 +5,9 @@ from typing import Optional, List, Dict
 
 from app.core.database import get_supabase
 from app.services.leaderboard_service import get_school_rankings
+from app.dependencies import get_current_active_user, require_tier
+from fastapi import APIRouter, HTTPException, Query, Depends
 from collections import defaultdict
-
-router = APIRouter(prefix="/analytics", tags=["enhanced-analytics"])
 
 
 class GrowthScore(BaseModel):
@@ -169,6 +169,7 @@ async def subject_ranking(
 async def school_leaderboard(
     school_id: str = Query(...),
     term: str = Query(...),
+    current_user: dict = Depends(require_tier("standard"))
 ):
     """
     Returns rankings and comparison data for a specific school.
