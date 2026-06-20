@@ -9,6 +9,8 @@ from app.dependencies import get_current_active_user, require_tier
 from fastapi import APIRouter, HTTPException, Query, Depends
 from collections import defaultdict
 
+router = APIRouter(prefix="/analytics", tags=["enhanced-analytics"])
+
 
 class GrowthScore(BaseModel):
     student_id: UUID
