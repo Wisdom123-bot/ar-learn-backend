@@ -57,7 +57,7 @@ async def get_current_active_user(current_user: dict = Depends(get_current_user)
     current_user["subscription_tier"] = school.data["subscription_tier"] if is_active else "basic"
     return current_user
 
-async def require_tier(required_tier: str):
+def require_tier(required_tier: str):
     """
     Dependency to require a specific subscription tier.
     Tiers: basic < standard < elite
@@ -74,7 +74,7 @@ async def require_tier(required_tier: str):
         return current_user
     return tier_checker
 
-async def require_role(role: str):
+def require_role(role: str):
     """
     Closure to require a specific role for a route.
     """

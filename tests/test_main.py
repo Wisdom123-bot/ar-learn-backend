@@ -6,7 +6,7 @@ client = TestClient(app)
 def test_read_root():
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json() == {"message": "Ar-Learn API is running"}
+    assert response.json() == {"message": "Ar-Learn API - Hardened Version"}
 
 def test_health_check():
     response = client.get("/health")

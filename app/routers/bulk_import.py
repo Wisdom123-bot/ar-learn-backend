@@ -15,6 +15,8 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form, status, De
 
 BATCH_SIZE = 50   # Insert 50 students at a time
 
+router = APIRouter(prefix="/bulk-import", tags=["bulk-import"])
+
 
 def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     """Extract all text from PDF, Excel, or CSV."""
