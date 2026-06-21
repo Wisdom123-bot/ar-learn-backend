@@ -8,6 +8,7 @@ from app.services.notification_service import create_notification
 from app.services.audit_service import log_action
 from app.schemas.fee import FeeBalanceCreate, FeePaymentCreate, FeeStatus, TermFeeRequest
 from app.dependencies import get_current_user
+from app.utils.security import sanitize_string, validate_uuid
 
 router = APIRouter(prefix="/fees", tags=["fees"])
 
@@ -38,8 +39,8 @@ async def add_fee_balance(
     # Use upsert to handle both creation and updates safely
     # Note: student_id + term must have a unique constraint in Postgres for this to be truly atomic
     data = {
-        "student_id": str(payload.student_id),
-        "term": payload.term,
+        "student_id": validate_uuid(payload.student_id),
+        "term": sanitize_string(payload.term, 30),
         "balance": payload.balance,
         "cleared": payload.balance <= 0,
     }
@@ -80,7 +81,7 @@ async def record_payment(
     db = get_supabase()
 
     # 1. Verify student exists and get school context
-    student_res = db.table("students").select("id, name, admission_number, school_id").eq("id", str(payload.student_id)).execute()
+    student_res = db.table("students").select("id, name, admission_number, school_id").eq("id", validate_uuid(payload.student_id)).execute()
     if not student_res.data:
         raise HTTPException(status_code=404, detail="Student not found")
     student = student_res.data[0]
@@ -123,12 +124,12 @@ async def record_payment(
 
     # 4. Insert Payment and Update Balance
     payment_data = {
-        "student_id": str(payload.student_id),
+        "student_id": validate_uuid(payload.student_id),
         "amount": payload.amount,
         "payment_date": payload.payment_date.isoformat(),
         "receipt_number": receipt,
-        "recorded_by": str(current_user["id"]),
-        "term": payload.term,
+        "recorded_by": validate_uuid(current_user["id"]),
+        "term": sanitize_string(payload.term, 30),
     }
     
     try:
@@ -181,6 +182,8 @@ async def get_student_fees(
     term: str = Query(...),
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(student_id)
+    safe_term = sanitize_string(term, 30)
     # Any teacher in the school can view student fees
     db = get_supabase()
     student = db.table("students").select("id, name, school_id").eq("id", student_id).execute()
@@ -194,7 +197,7 @@ async def get_student_fees(
         db.table("fee_balances")
         .select("*")
         .eq("student_id", student_id)
-        .eq("term", term)
+        .eq("term", safe_term)
         .maybe_single()
         .execute()
     )
@@ -246,6 +249,8 @@ async def class_fee_status(
     term: str = Query(...),
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(class_id)
+    safe_term = sanitize_string(term, 30)
     """
     Optimized class-wide fee status using JOINs and batching.
     No more N+1 query pattern.

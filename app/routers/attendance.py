@@ -1,8 +1,10 @@
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
 from typing import List, Optional
 from app.core.database import get_supabase
+from app.core.redis import cache_result
 from app.schemas.attendance import BulkAttendanceRequest, AttendanceStats
 from app.dependencies import get_current_user
+from app.utils.security import sanitize_string, validate_uuid
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
@@ -29,11 +31,11 @@ async def record_attendance(
     # 2. Build rows for upsert
     rows = [
         {
-            "student_id": str(entry.student_id),
-            "class_id": str(payload.class_id),
+            "student_id": validate_uuid(entry.student_id),
+            "class_id": validate_uuid(payload.class_id),
             "date": entry.date.isoformat(),
             "status": entry.status,
-            "recorded_by": str(current_user["id"]),
+            "recorded_by": validate_uuid(current_user["id"]),
         }
         for entry in payload.records
     ]
@@ -56,12 +58,16 @@ async def record_attendance(
 
 
 @router.get("/stats/class/{class_id}", response_model=List[AttendanceStats])
+@cache_result(expire=300, prefix="attendance") # Cache for 5 minutes
 async def class_attendance_stats(
     class_id: str,
     term_start: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
     term_end: Optional[str] = Query(None, description="End date YYYY-MM-DD"),
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(class_id)
+    safe_start = sanitize_string(term_start, 10) if term_start else None
+    safe_end = sanitize_string(term_end, 10) if term_end else None
     """
     Optimized class statistics using batch fetching.
     Secure: Verifies school membership.
@@ -120,12 +126,16 @@ async def class_attendance_stats(
 
 
 @router.get("/stats/student/{student_id}", response_model=AttendanceStats)
+@cache_result(expire=300, prefix="attendance") # Cache for 5 minutes
 async def student_attendance_stats(
     student_id: str,
     term_start: Optional[str] = Query(None),
     term_end: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(student_id)
+    safe_start = sanitize_string(term_start, 10) if term_start else None
+    safe_end = sanitize_string(term_end, 10) if term_end else None
     """
     Secure individual stats fetch.
     """

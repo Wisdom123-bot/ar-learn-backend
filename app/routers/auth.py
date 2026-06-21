@@ -1,16 +1,17 @@
 from fastapi import APIRouter, HTTPException, status, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from app.core.database import get_supabase
 from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.services.rate_limit_service import is_ip_banned, record_failed_attempt, reset_attempts
+from app.utils.security import sanitize_search_query
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 # ---------- Schemas ----------
 class TeacherLoginRequest(BaseModel):
-    teacher_code: str
+    teacher_code: str = Field(..., min_length=4, max_length=15, pattern=r"^[A-Z0-9]+$")
 
 
 class TeacherLoginResponse(BaseModel):
@@ -23,6 +24,7 @@ class TeacherLoginResponse(BaseModel):
     school_name: str
     role: str = "teacher"
     is_premium: bool = False
+    subscription_tier: str = "basic"
     slug: Optional[str] = None
     logo_url: Optional[str] = None
 
@@ -34,9 +36,9 @@ class SchoolSearchResult(BaseModel):
 
 
 class UnifiedLoginRequest(BaseModel):
-    school_id: str
-    role: str          # headteacher, dean, teacher
-    teacher_code: str
+    school_id: str = Field(..., pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    role: str = Field(..., pattern="^(headteacher|dean|teacher)$")
+    teacher_code: str = Field(..., min_length=4, max_length=15, pattern=r"^[A-Z0-9]+$")
 
 
 class UnifiedLoginResponse(BaseModel):
@@ -49,6 +51,7 @@ class UnifiedLoginResponse(BaseModel):
     school_name: str
     role: str
     is_premium: bool = False
+    subscription_tier: str = "basic"
     slug: Optional[str] = None
     logo_url: Optional[str] = None
 
@@ -88,7 +91,7 @@ async def teacher_login(payload: TeacherLoginRequest, request: Request):
 
     result = (
         db.table("teachers")
-        .select("*, schools(name, is_active, is_premium, slug, logo_url)")
+        .select("*, schools(name, is_active, is_premium, subscription_tier, subscription_expiry, is_manual_override, slug, logo_url)")
         .eq("teacher_code", payload.teacher_code)
         .execute()
     )
@@ -102,6 +105,23 @@ async def teacher_login(payload: TeacherLoginRequest, request: Request):
 
     if school_data and not school_data.get("is_active", True):
         raise HTTPException(status_code=403, detail="School account is suspended.")
+
+    # Calculate tier
+    is_active_sub = False
+    if school_data.get("is_manual_override"):
+        is_active_sub = True
+    elif school_data.get("subscription_expiry"):
+        import datetime
+        try:
+            expiry = datetime.datetime.fromisoformat(school_data["subscription_expiry"].replace('Z', '+00:00'))
+            if expiry > datetime.datetime.now(expiry.tzinfo):
+                is_active_sub = True
+        except:
+            pass
+    
+    tier = school_data.get("subscription_tier", "basic") if is_active_sub else "basic"
+    if school_data.get("is_premium") and tier == "basic":
+        tier = "standard"
 
     reset_attempts(ip)
     
@@ -119,6 +139,7 @@ async def teacher_login(payload: TeacherLoginRequest, request: Request):
         school_name=school_data["name"] if school_data else "",
         role=teacher.get("role", "teacher"),
         is_premium=school_data.get("is_premium", False) if school_data else False,
+        subscription_tier=tier,
         slug=school_data.get("slug") if school_data else None,
         logo_url=school_data.get("logo_url") if school_data else None,
     )
@@ -127,13 +148,14 @@ async def teacher_login(payload: TeacherLoginRequest, request: Request):
 # ---------- School Search ----------
 @router.get("/schools/search", response_model=list[SchoolSearchResult])
 async def search_schools(name: str):
-    if not name or len(name.strip()) < 2:
+    safe_name = sanitize_search_query(name)
+    if not safe_name or len(safe_name) < 2:
         raise HTTPException(status_code=400, detail="Search term too short")
     db = get_supabase()
     result = (
         db.table("schools")
         .select("id, name, county")
-        .ilike("name", f"%{name.strip()}%")
+        .ilike("name", f"%{safe_name}%")
         .execute()
     )
     return [
@@ -154,7 +176,7 @@ async def unified_login(payload: UnifiedLoginRequest, request: Request):
     # 1. Validate school
     school = (
         db.table("schools")
-        .select("id, name, is_active, is_premium, slug, logo_url")
+        .select("id, name, is_active, is_premium, subscription_tier, subscription_expiry, is_manual_override, slug, logo_url")
         .eq("id", payload.school_id)
         .single()
         .execute()
@@ -163,6 +185,23 @@ async def unified_login(payload: UnifiedLoginRequest, request: Request):
         raise HTTPException(status_code=404, detail="School not found")
     if not school.data["is_active"]:
         raise HTTPException(status_code=403, detail="School account is suspended.")
+
+    # Calculate tier
+    is_active_sub = False
+    if school.data.get("is_manual_override"):
+        is_active_sub = True
+    elif school.data.get("subscription_expiry"):
+        import datetime
+        try:
+            expiry = datetime.datetime.fromisoformat(school.data["subscription_expiry"].replace('Z', '+00:00'))
+            if expiry > datetime.datetime.now(expiry.tzinfo):
+                is_active_sub = True
+        except:
+            pass
+    
+    tier = school.data.get("subscription_tier", "basic") if is_active_sub else "basic"
+    if school.data.get("is_premium") and tier == "basic":
+        tier = "standard"
 
     # 2. Validate role
     if payload.role not in ("headteacher", "dean", "teacher"):
@@ -199,6 +238,7 @@ async def unified_login(payload: UnifiedLoginRequest, request: Request):
         school_name=school.data["name"],
         role=teacher["role"],
         is_premium=school.data.get("is_premium", False),
+        subscription_tier=tier,
         slug=school.data.get("slug"),
         logo_url=school.data.get("logo_url"),
     )

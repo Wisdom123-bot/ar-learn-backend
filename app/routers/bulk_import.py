@@ -12,6 +12,7 @@ from app.services.ml_risk_service import train_model_async
 from app.services.audit_service import log_action
 from app.dependencies import get_current_user
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form, status, Depends
+from app.utils.security import validate_file, validate_uuid, sanitize_string
 
 BATCH_SIZE = 50   # Insert 50 students at a time
 
@@ -111,6 +112,10 @@ async def import_students(
     use_ai: bool = Form(False),
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(school_id, "School ID")
+    validate_uuid(class_id, "Class ID")
+    validate_file(file, ["pdf", "xlsx", "xls", "csv"])
+
     if school_id != current_user["school_id"]:
         raise HTTPException(status_code=403, detail="Forbidden")
         
@@ -175,10 +180,10 @@ async def import_students(
     to_insert = []
     errors = []
     for idx, student in enumerate(raw_students):
-        name = student.get("name")
+        name = sanitize_string(student.get("name"), 100)
         if not name: continue
         
-        admission_num = student.get("admission_number")
+        admission_num = sanitize_string(student.get("admission_number"), 20)
         if not admission_num:
             max_num += 1
             admission_num = f"{prefix}{max_num:04d}"
@@ -235,6 +240,11 @@ async def import_results(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(school_id, "School ID")
+    validate_uuid(teacher_id, "Teacher ID")
+    if class_id: validate_uuid(class_id, "Class ID")
+    validate_file(file, ["pdf", "xlsx", "xls", "csv"])
+
     if school_id != current_user["school_id"]:
          raise HTTPException(status_code=403, detail="Forbidden")
 

@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from uuid import UUID
 from datetime import date
 from app.core.database import get_supabase
 from app.dependencies import get_current_user
+from app.utils.security import sanitize_string, validate_uuid
 
 router = APIRouter(prefix="/discipline", tags=["discipline"])
 
@@ -14,9 +15,9 @@ class DisciplineEntry(BaseModel):
     class_id: UUID
     teacher_id: UUID
     incident_date: date
-    category: str          # Minor, Major, Positive
-    description: str
-    action_taken: str = ""
+    category: str = Field(..., pattern="^(Minor|Major|Positive)$")          # Minor, Major, Positive
+    description: str = Field(..., min_length=5, max_length=500)
+    action_taken: str = Field("", max_length=200)
 
 
 class DisciplineResponse(BaseModel):
@@ -62,13 +63,13 @@ async def add_discipline_record(
         raise HTTPException(status_code=403, detail="Access denied: Class context is invalid.")
 
     data = {
-        "student_id": str(payload.student_id),
-        "class_id": str(payload.class_id),
-        "teacher_id": str(payload.teacher_id),
+        "student_id": validate_uuid(payload.student_id),
+        "class_id": validate_uuid(payload.class_id),
+        "teacher_id": validate_uuid(payload.teacher_id),
         "incident_date": payload.incident_date.isoformat(),
         "category": payload.category,
-        "description": payload.description,
-        "action_taken": payload.action_taken,
+        "description": sanitize_string(payload.description, 500),
+        "action_taken": sanitize_string(payload.action_taken, 200),
     }
     
     try:
@@ -86,6 +87,7 @@ async def class_discipline_records(
     class_id: str,
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(class_id)
     db = get_supabase()
     
     # Verify class belongs to school
@@ -124,6 +126,7 @@ async def student_discipline_records(
     student_id: str,
     current_user: dict = Depends(get_current_user)
 ):
+    validate_uuid(student_id)
     db = get_supabase()
     
     # Verify student belongs to school

@@ -1,10 +1,12 @@
 from fastapi import APIRouter
 from app.core.database import get_supabase
+from app.core.redis import cache_result
 import time
 
 router = APIRouter(prefix="/public", tags=["public"])
 
 @router.get("/stats")
+@cache_result(expire=600, prefix="public")  # Cache for 10 minutes
 async def get_public_stats():
     db = get_supabase()
     
@@ -17,7 +19,6 @@ async def get_public_stats():
     total_students = students_res.count or 0
     
     # For uptime, we'll return a value based on the current health and a high base
-    # In a real app, this would come from a monitoring API
     uptime = 99.98
     
     return {

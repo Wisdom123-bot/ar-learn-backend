@@ -1,9 +1,9 @@
-import asyncio
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 from app.core.database import get_supabase
 from app.schemas.result import BulkResultRequest
 from app.services.notification_service import create_notification
 from app.dependencies import get_current_user
+from app.utils.security import sanitize_string, validate_uuid
 
 router = APIRouter(prefix="/results", tags=["results"])
 
@@ -13,9 +13,11 @@ CHUNK_SIZE = 5000   # safe batch size for Supabase
 @router.post("/submit")
 async def submit_results(
     payload: BulkResultRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     db = get_supabase()
+    # ... (skipping unchanged code for brevity, but I must provide full targetContent for replacement)
 
     # 1. Verify current user is the one submitting and get school context
     if str(payload.teacher_id) != current_user["id"]:
@@ -82,14 +84,14 @@ async def submit_results(
     # 6. Prepare all rows for bulk insert
     rows = [
         {
-            "student_id": str(e.student_id),
-            "subject_id": str(e.subject_id),
-            "class_id": str(e.class_id),
+            "student_id": validate_uuid(e.student_id),
+            "subject_id": validate_uuid(e.subject_id),
+            "class_id": validate_uuid(e.class_id),
             "exam_type": e.exam_type,
-            "term": payload.term,
-            "academic_year": payload.academic_year,
+            "term": sanitize_string(payload.term, 30),
+            "academic_year": sanitize_string(payload.academic_year, 4),
             "score": e.score,
-            "remarks": e.remarks,
+            "remarks": sanitize_string(e.remarks, 200),
             "submitted_by": teacher_id,
         }
         for e in payload.results
@@ -109,7 +111,7 @@ async def submit_results(
                 detail=f"Internal Database Error during submission: {str(e)}",
             )
 
-    # 8. Notify school administration
+    # 8. Notify school administration (Async)
     admins = (
         db.table("teachers")
         .select("id")
@@ -119,7 +121,8 @@ async def submit_results(
         .data or []
     )
     for admin in admins:
-        create_notification(
+        background_tasks.add_task(
+            create_notification,
             school_id=school_id,
             teacher_id=admin["id"],
             title="Academic Results Filed",
@@ -127,12 +130,10 @@ async def submit_results(
             category="result",
         )
 
-    # 9. Trigger background ML model refresh
+    # 9. Trigger background ML model refresh (Async)
     try:
         from app.services.ml_risk_service import train_model_async as ml_train
-        asyncio.create_task(
-            asyncio.to_thread(ml_train, school_id)
-        )
+        background_tasks.add_task(ml_train, school_id)
     except Exception:
         pass
 

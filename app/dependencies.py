@@ -41,7 +41,7 @@ async def get_current_active_user(current_user: dict = Depends(get_current_user)
     db = get_supabase()
     school_id = current_user["school_id"]
     
-    school = db.table("schools").select("is_active, subscription_tier, subscription_expiry, is_manual_override").eq("id", school_id).single().execute()
+    school = db.table("schools").select("is_active, subscription_tier, subscription_expiry, is_manual_override, is_premium").eq("id", school_id).single().execute()
     if not school.data or not school.data.get("is_active", True):
          raise HTTPException(status_code=403, detail="Account suspended or school not found")
 
@@ -54,7 +54,13 @@ async def get_current_active_user(current_user: dict = Depends(get_current_user)
         if expiry > datetime.datetime.now(expiry.tzinfo):
             is_active = True
     
-    current_user["subscription_tier"] = school.data["subscription_tier"] if is_active else "basic"
+    tier = school.data["subscription_tier"] if is_active else "basic"
+    
+    # Legacy support: if is_premium is True, treat as "standard" if it's currently basic
+    if school.data.get("is_premium") and tier == "basic":
+        tier = "standard"
+        
+    current_user["subscription_tier"] = tier
     return current_user
 
 def require_tier(required_tier: str):

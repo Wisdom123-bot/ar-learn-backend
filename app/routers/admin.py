@@ -4,7 +4,8 @@ from pydantic import BaseModel
 from typing import Optional
 from app.core.database import get_supabase
 from app.core.config import settings
-from app.core.security import verify_password, hash_password
+from app.core.security import verify_password, hash_password, create_access_token, decode_token
+from app.utils.security import sanitize_string, sanitize_search_query, validate_uuid
 from app.services.rate_limit_service import list_banned_ips, unban_ip
 from app.services.email_service import send_email
 from app.services.audit_service import log_action
@@ -30,23 +31,18 @@ def verify_admin(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer(
         raise HTTPException(status_code=403, detail="Invalid admin credentials")
     return True
 
-# Alternative: proper admin login using admins table (we can add later).
-# For now, use the simple API key method.
+# Alternative: proper admin login using admins table.
 
-# We'll provide both: a login endpoint that returns an admin token (simple random string)
-# and also support the API key from env for direct access.
-
-# Let's implement a proper login with bcrypt and the admins table.
-# On first startup, if no admin exists, create a default one.
-# The default password can be printed in console.
-
-import random, string
-
-def generate_admin_token() -> str:
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-
-# Store active admin tokens in memory (simple)
-admin_tokens = {}
+def verify_admin_token(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())):
+    token = credentials.credentials
+    # Also check if it matches the hardcoded API key (for easy dev)
+    if token == ADMIN_API_KEY:
+        return True
+        
+    payload = decode_token(token)
+    if payload is None or payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Invalid or expired admin token")
+    return True
 
 class AdminLoginRequest(BaseModel):
     username: str
@@ -63,20 +59,10 @@ async def admin_login(payload: AdminLoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not verify_password(payload.password, admin.data["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = generate_admin_token()
-    admin_tokens[token] = admin.data["id"]
+    
+    # Generate JWT token
+    token = create_access_token(data={"sub": admin.data["id"], "role": "admin"})
     return {"token": token}
-
-def verify_admin_token(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())):
-    token = credentials.credentials
-    if token not in admin_tokens:
-        # Also check if it matches the hardcoded API key (for easy dev)
-        if token == ADMIN_API_KEY:
-            return True
-        raise HTTPException(status_code=403, detail="Invalid or expired admin token")
-    return True
-
-# --- School Management ---
 
 from app.schemas.school import SchoolRegistrationResponse  # reuse maybe
 
@@ -166,6 +152,10 @@ async def manual_subscription_override(school_id: str, tier: str, active: bool, 
 async def list_all_schools(_: bool = Depends(verify_admin_token)):
     db = get_supabase()
     schools = db.table("schools").select("id, name, county, student_count, teacher_count, is_active, is_premium, email, phone, created_at").execute().data or []
+    # Sanitize output for safe display
+    for s in schools:
+        s["name"] = sanitize_string(s["name"])
+        s["county"] = sanitize_string(s["county"])
     return schools
 
 @router.put("/schools/{school_id}/suspend")
@@ -236,11 +226,12 @@ async def setup_default_admin():
     return {"message": f"Default admin created. Username: {default_username}, Password: {default_password} (change immediately!)"}
 
 class BrandingUpdate(BaseModel):
-    slug: Optional[str] = None
-    logo_url: Optional[str] = None
+    slug: Optional[str] = Field(None, min_length=3, max_length=30, pattern=r"^[a-z0-9-]+$")
+    logo_url: Optional[str] = Field(None, max_length=255, pattern=r"^https?://.*$")
 
 @router.put("/schools/{school_id}/branding")
 async def update_school_branding(school_id: str, payload: BrandingUpdate, _: bool = Depends(verify_admin_token)):
+    validate_uuid(school_id, "School ID")
     db = get_supabase()
     data = {}
     if payload.slug is not None:
@@ -306,11 +297,11 @@ async def change_admin_password(
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
 ):
     token = credentials.credentials
-    admin_id = admin_tokens.get(token)
-    if not admin_id:
-        # also check if it matches API key (not usable for password change)
+    payload_decoded = decode_token(token)
+    if not payload_decoded or payload_decoded.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
+    admin_id = payload_decoded.get("sub")
     db = get_supabase()
     admin = db.table("admins").select("*").eq("id", admin_id).single().execute()
     if not admin.data:
@@ -323,9 +314,6 @@ async def change_admin_password(
     # Hash new password and update
     new_hash = hash_password(payload.new_password)
     db.table("admins").update({"password_hash": new_hash}).eq("id", admin_id).execute()
-
-    # Invalidate current token (remove it) so they must re-login with new password
-    del admin_tokens[token]
 
     return {"message": "Password changed successfully. Please log in again."}
 @router.get("/debug-login-attempts")

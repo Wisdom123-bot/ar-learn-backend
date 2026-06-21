@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import register_routers
 import logging
@@ -8,6 +10,14 @@ app = FastAPI(
     description="School Management & Analytics System for Kenyan Schools",
     version="0.1.1",
 )
+
+# Global Validation Error Handler to prevent data leakage and return clean 400s
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": "Invalid input provided.", "errors": exc.errors()},
+    )
 
 # Robust logging
 logging.basicConfig(level=logging.INFO)
@@ -36,13 +46,19 @@ app.add_middleware(
 # Centralized Router Registration
 register_routers(app)
 
+from app.core.redis import cache_result
+
 @app.get("/")
+@cache_result(expire=3600, prefix="system")
 async def root():
     return {"message": "Ar-Learn API - Hardened Version"}
 
 @app.get("/health")
+@cache_result(expire=60, prefix="system")
 async def health_check():
     return {"status": "healthy"}
+
 @app.get("/healthz")
+@cache_result(expire=60, prefix="system")
 async def healthz():
     return {"status": "ok"}

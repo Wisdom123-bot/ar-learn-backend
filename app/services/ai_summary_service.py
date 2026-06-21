@@ -1,11 +1,14 @@
 from app.core.database import get_supabase
 from app.services.llm_client import ask_llm
+from app.core.redis import redis_client
 import json
+import hashlib
 
 async def generate_student_summary(student_id: str, term: str):
     db = get_supabase()
     
     # 1. Fetch comprehensive data
+    # ... (same fetch logic)
     # Results (including subject teacher remarks)
     results = db.table("results").select("*, subjects(name)").eq("student_id", student_id).eq("term", term).eq("approval_status", "approved").execute().data or []
     
@@ -48,7 +51,29 @@ async def generate_student_summary(student_id: str, term: str):
         "Maintain a supportive yet realistic tone suitable for a school report card's principal/dean summary."
     )
     
+    # 3. Cache Logic
+    # We hash the results and remarks to ensure cache invalidates if data changes
+    data_to_hash = f"{results_str}{ct_remark_text}{att_str}{disc_str}"
+    data_hash = hashlib.md5(data_to_hash.encode()).hexdigest()
+    cache_key = f"ai_summary:{student_id}:{term}:{data_hash}"
+
+    if redis_client:
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
     system = "You are an expert academic advisor. Provide a 3-4 sentence professional summary of a student's performance based on provided data."
     
     summary = await ask_llm(prompt, system=system)
+
+    # Store in cache for 7 days (604800 seconds)
+    if redis_client:
+        try:
+            redis_client.setex(cache_key, 604800, summary)
+        except Exception:
+            pass
+
     return summary

@@ -2,17 +2,19 @@ from fastapi import APIRouter, HTTPException, Query
 from app.core.database import get_supabase
 from collections import defaultdict
 from app.services.ai_summary_service import generate_student_summary
+from app.utils.security import sanitize_search_query, validate_uuid
 
 router = APIRouter(prefix="/students", tags=["students"])
 
 
 @router.get("/by-admission")
-async def get_student_by_admission(admission: str = Query(...)):
+async def get_student_by_admission(admission: str = Query(..., min_length=3, max_length=20)):
+    safe_adm = sanitize_search_query(admission)
     db = get_supabase()
     result = (
         db.table("students")
         .select("id, name, admission_number, class_id")
-        .eq("admission_number", admission)
+        .eq("admission_number", safe_adm)
         .limit(1)
         .execute()
     )
@@ -20,13 +22,14 @@ async def get_student_by_admission(admission: str = Query(...)):
         raise HTTPException(status_code=404, detail="Student not found")
     return result.data[0]
 @router.get("/search")
-async def search_students(q: str = Query(..., min_length=2)):
+async def search_students(q: str = Query(..., min_length=2, max_length=50)):
     db = get_supabase()
+    safe_q = sanitize_search_query(q)
     # Search by name OR admission number (case‑insensitive)
     result = (
         db.table("students")
         .select("id, name, admission_number, classes(name)")
-        .or_(f"name.ilike.%{q}%,admission_number.ilike.%{q}%")
+        .or_(f"name.ilike.%{safe_q}%,admission_number.ilike.%{safe_q}%")
         .limit(10)
         .execute()
         .data or []
@@ -42,6 +45,7 @@ async def search_students(q: str = Query(..., min_length=2)):
 
 @router.get("/school/{school_id}")
 async def list_school_students(school_id: str):
+    validate_uuid(school_id, "School ID")
     db = get_supabase()
     students = (
         db.table("students")
@@ -62,6 +66,7 @@ async def list_school_students(school_id: str):
 
 @router.get("/{student_id}/profile")
 async def get_student_profile(student_id: str, term: str = Query("Term 1 2025")):
+    validate_uuid(student_id, "Student ID")
     db = get_supabase()
 
     # 1. Fetch basic student info
