@@ -9,16 +9,25 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL")
 
-# Initialize Redis client
-try:
-    if REDIS_URL:
-        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-    else:
-        redis_client = None
+def _create_redis_client():
+    if not REDIS_URL:
         logger.warning("REDIS_URL not found. Caching will be disabled.")
-except Exception as e:
-    redis_client = None
-    logger.error(f"Failed to connect to Redis: {str(e)}")
+        return None
+    try:
+        return redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_keepalive=True,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            retry_on_timeout=True,
+            health_check_interval=30,
+        )
+    except Exception as e:
+        logger.error(f"Failed to connect to Redis: {str(e)}")
+        return None
+
+redis_client = _create_redis_client()
 
 def cache_result(expire: int = 60, prefix: str = "cache"):
     """
