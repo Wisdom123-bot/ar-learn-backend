@@ -9,18 +9,29 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL")
 
+def _get_tls_redis_url(url: str) -> str:
+    """
+    Upstash Redis requires TLS. Ensure the URL uses rediss:// scheme.
+    Handles cases where the env var is mistakenly set to redis://.
+    """
+    if url.startswith("redis://"):
+        return url.replace("redis://", "rediss://", 1)
+    return url
+
 def _create_redis_client():
     if not REDIS_URL:
         logger.warning("REDIS_URL not found. Caching will be disabled.")
         return None
     try:
+        tls_url = _get_tls_redis_url(REDIS_URL)
         return redis.from_url(
-            REDIS_URL,
+            tls_url,
             decode_responses=True,
             socket_keepalive=True,
             socket_connect_timeout=5,
             socket_timeout=5,
             retry_on_timeout=True,
+            ssl_cert_reqs=None,  # Upstash uses self-signed-friendly TLS
         )
     except Exception as e:
         logger.error(f"Failed to connect to Redis: {str(e)}")

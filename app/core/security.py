@@ -31,6 +31,21 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+def create_admin_token(username: str):
+    """
+    Create a signed JWT token for admin users.
+    Embeds role='admin' so the admin auth dependency can validate it.
+    Uses a longer expiry (8 hours) suitable for an admin session.
+    """
+    expire = datetime.now(timezone.utc) + timedelta(hours=8)
+    to_encode = {
+        "sub": username,
+        "role": "admin",
+        "type": "access",
+        "exp": expire,
+    }
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
 def create_refresh_token(data: dict):
     """Create a very long-lived refresh token."""
     to_encode = data.copy()
@@ -48,3 +63,8 @@ def decode_token(token: str):
         return decoded_token
     except jwt.PyJWTError:
         return None
+
+def is_admin_token(token: str) -> bool:
+    """Returns True if the token is a valid admin token."""
+    payload = decode_token(token)
+    return payload is not None and payload.get("role") == "admin"
