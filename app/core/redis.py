@@ -21,7 +21,6 @@ def _create_redis_client():
             socket_connect_timeout=5,
             socket_timeout=5,
             retry_on_timeout=True,
-            health_check_interval=30,
         )
     except Exception as e:
         logger.error(f"Failed to connect to Redis: {str(e)}")
